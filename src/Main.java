@@ -26,11 +26,12 @@ public class Main {
         String currentPath = options.get("current");
         String key = options.getOrDefault("key", DEFAULT_KEY);
         String jsonPath = options.get("json");
+        Set<String> ignoredFields = parseIgnoredFields(options.get("ignore"));
 
         try {
             Roster previous = readRoster(Path.of(previousPath), key);
             Roster current = readRoster(Path.of(currentPath), key);
-            Report report = diff(previous, current, key);
+            Report report = diff(previous, current, key, ignoredFields);
 
             String output = report.toText(previousPath, currentPath);
             System.out.println(output);
@@ -45,7 +46,7 @@ public class Main {
     }
 
     private static void printUsage() {
-        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--json report.json]");
+        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--ignore field1,field2] [--json report.json]");
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -76,6 +77,8 @@ public class Main {
         Map<String, Map<String, String>> rows = new LinkedHashMap<>();
         int duplicates = 0;
         int invalid = 0;
+        List<String> duplicateKeys = new ArrayList<>();
+        List<Integer> invalidRows = new ArrayList<>();
 
         for (int i = 1; i < lines.size(); i++) {
             String line = lines.get(i).trim();
@@ -99,18 +102,20 @@ public class Main {
             String keyValue = row.getOrDefault(key, "").trim();
             if (keyValue.isBlank()) {
                 invalid++;
+                invalidRows.add(i + 1);
                 continue;
             }
 
             if (rows.containsKey(keyValue)) {
                 duplicates++;
+                duplicateKeys.add(keyValue);
                 continue;
             }
 
             rows.put(keyValue, row);
         }
 
-        return new Roster(header, rows, duplicates, invalid);
+        return new Roster(header, rows, duplicates, invalid, duplicateKeys, invalidRows);
     }
 
     private static List<String> parseCsvLine(String line) {
@@ -161,6 +166,7 @@ public class Main {
 
         List<Update> updates = new ArrayList<>();
         int unchanged = 0;
+        Map<String, Integer> fieldChangeCounts = new LinkedHashMap<>();
 
         for (String sharedKey : shared) {
             Map<String, String> prevRow = previous.rows.get(sharedKey);
@@ -171,6 +177,7 @@ public class Main {
                 String after = curRow.getOrDefault(field, "");
                 if (!before.equals(after)) {
                     changes.put(field, new Change(before, after));
+                    fieldChangeCounts.put(field, fieldChangeCounts.getOrDefault(field, 0) + 1);
                 }
             }
             if (changes.isEmpty()) {
@@ -182,10 +189,11 @@ public class Main {
 
         updates.sort(Comparator.comparing(update -> update.key));
 
-        return new Report(previous, current, key, added, removed, updates, unchanged);
+        return new Report(previous, current, key, added, removed, updates, unchanged, fieldChangeCounts);
     }
 
-    private record Roster(List<String> header, Map<String, Map<String, String>> rows, int duplicates, int invalid) {}
+    private record Roster(List<String> header, Map<String, Map<String, String>> rows, int duplicates, int invalid,
+                          List<String> duplicateKeys, List<Integer> invalidRows) {}
 
     private record Change(String before, String after) {}
 
@@ -199,9 +207,11 @@ public class Main {
         private final Set<String> removed;
         private final List<Update> updates;
         private final int unchanged;
+        private final Map<String, Integer> fieldChangeCounts;
         private final LocalDateTime timestamp;
 
-        private Report(Roster previous, Roster current, String key, Set<String> added, Set<String> removed, List<Update> updates, int unchanged) {
+        private Report(Roster previous, Roster current, String key, Set<String> added, Set<String> removed, List<Update> updates,
+                       int unchanged, Map<String, Integer> fieldChangeCounts) {
             this.previous = previous;
             this.current = current;
             this.key = key;
@@ -209,6 +219,7 @@ public class Main {
             this.removed = removed;
             this.updates = updates;
             this.unchanged = unchanged;
+            this.fieldChangeCounts = fieldChangeCounts;
             this.timestamp = LocalDateTime.now();
         }
 
@@ -231,6 +242,36 @@ public class Main {
             sb.append("- duplicate_keys_current: ").append(current.duplicates).append("\n");
             sb.append("- invalid_rows_previous: ").append(previous.invalid).append("\n");
             sb.append("- invalid_rows_current: ").append(current.invalid).append("\n\n");
+
+            if (!fieldChangeCounts.isEmpty()) {
+                sb.append("Field Change Counts:\n");
+                fieldChangeCounts.entrySet().stream()
+                        .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
+                        .forEach(entry -> sb.append("  - ").append(entry.getKey()).append(": ").append(entry.getValue()).append("\n"));
+                sb.append("\n");
+            }
+
+            if (!previous.duplicateKeys.isEmpty() || !current.duplicateKeys.isEmpty()) {
+                sb.append("Duplicate Key Values:\n");
+                if (!previous.duplicateKeys.isEmpty()) {
+                    sb.append("  previous: ").append(String.join(", ", previous.duplicateKeys)).append("\n");
+                }
+                if (!current.duplicateKeys.isEmpty()) {
+                    sb.append("  current: ").append(String.join(", ", current.duplicateKeys)).append("\n");
+                }
+                sb.append("\n");
+            }
+
+            if (!previous.invalidRows.isEmpty() || !current.invalidRows.isEmpty()) {
+                sb.append("Invalid Rows (1-based row numbers):\n");
+                if (!previous.invalidRows.isEmpty()) {
+                    sb.append("  previous: ").append(joinIntList(previous.invalidRows)).append("\n");
+                }
+                if (!current.invalidRows.isEmpty()) {
+                    sb.append("  current: ").append(joinIntList(current.invalidRows)).append("\n");
+                }
+                sb.append("\n");
+            }
 
             if (!added.isEmpty()) {
                 sb.append("Added (" + added.size() + "):\n");
@@ -282,6 +323,25 @@ public class Main {
             sb.append("    \"invalid_rows_previous\": ").append(previous.invalid).append(",\n");
             sb.append("    \"invalid_rows_current\": ").append(current.invalid).append("\n");
             sb.append("  },\n");
+            sb.append("  \"field_change_counts\": {\n");
+            sb.append(joinJsonMap(fieldChangeCounts));
+            sb.append("  },\n");
+            sb.append("  \"duplicate_key_values\": {\n");
+            sb.append("    \"previous\": [\n");
+            sb.append(joinJsonArray(previous.duplicateKeys));
+            sb.append("    ],\n");
+            sb.append("    \"current\": [\n");
+            sb.append(joinJsonArray(current.duplicateKeys));
+            sb.append("    ]\n");
+            sb.append("  },\n");
+            sb.append("  \"invalid_rows\": {\n");
+            sb.append("    \"previous\": [\n");
+            sb.append(joinJsonIntArray(previous.invalidRows));
+            sb.append("    ],\n");
+            sb.append("    \"current\": [\n");
+            sb.append(joinJsonIntArray(current.invalidRows));
+            sb.append("    ]\n");
+            sb.append("  },\n");
             sb.append("  \"added\": [\n");
             sb.append(joinJsonArray(added));
             sb.append("  ],\n");
@@ -330,6 +390,56 @@ public class Main {
                     sb.append(",");
                 }
                 sb.append("\n");
+            }
+            return sb.toString();
+        }
+
+        private String joinJsonArray(List<String> values) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < values.size(); i++) {
+                sb.append("      \"").append(escape(values.get(i))).append("\"");
+                if (i < values.size() - 1) {
+                    sb.append(",");
+                }
+                sb.append("\n");
+            }
+            return sb.toString();
+        }
+
+        private String joinJsonIntArray(List<Integer> values) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < values.size(); i++) {
+                sb.append("      ").append(values.get(i));
+                if (i < values.size() - 1) {
+                    sb.append(",");
+                }
+                sb.append("\n");
+            }
+            return sb.toString();
+        }
+
+        private String joinJsonMap(Map<String, Integer> values) {
+            StringBuilder sb = new StringBuilder();
+            List<Map.Entry<String, Integer>> entries = new ArrayList<>(values.entrySet());
+            entries.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+            for (int i = 0; i < entries.size(); i++) {
+                Map.Entry<String, Integer> entry = entries.get(i);
+                sb.append("    \"").append(escape(entry.getKey())).append("\": ").append(entry.getValue());
+                if (i < entries.size() - 1) {
+                    sb.append(",");
+                }
+                sb.append("\n");
+            }
+            return sb.toString();
+        }
+
+        private String joinIntList(List<Integer> values) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < values.size(); i++) {
+                sb.append(values.get(i));
+                if (i < values.size() - 1) {
+                    sb.append(", ");
+                }
             }
             return sb.toString();
         }

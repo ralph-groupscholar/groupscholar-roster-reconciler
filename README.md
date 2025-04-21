@@ -6,6 +6,7 @@ Group Scholar Roster Reconciler is a local-first CLI that compares two roster CS
 - Diff two roster CSVs by a stable key (default: `email`).
 - Summaries for additions, removals, updates, unchanged rows, and duplicates.
 - Field-level change detail for updated records.
+- Field change counts plus duplicate key and invalid row diagnostics.
 - CSV parsing with quoted field support.
 - Optional JSON report output for downstream workflows.
 
@@ -53,6 +54,10 @@ Summary:
 - duplicate_keys_current: 0
 - invalid_rows_previous: 0
 - invalid_rows_current: 0
+
+Field Change Counts:
+  - status: 1
+  - cohort: 1
 ```
 
 ## Technologies
