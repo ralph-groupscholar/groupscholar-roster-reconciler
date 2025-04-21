@@ -67,6 +67,21 @@ public class Main {
         return options;
     }
 
+    private static Set<String> parseIgnoredFields(String raw) {
+        Set<String> ignored = new HashSet<>();
+        if (raw == null || raw.isBlank()) {
+            return ignored;
+        }
+        String[] parts = raw.split(",");
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (!trimmed.isBlank()) {
+                ignored.add(trimmed);
+            }
+        }
+        return ignored;
+    }
+
     private static Roster readRoster(Path path, String key) throws IOException {
         List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
         if (lines.isEmpty()) {
@@ -74,6 +89,9 @@ public class Main {
         }
 
         List<String> header = parseCsvLine(lines.get(0));
+        if (!header.contains(key)) {
+            throw new IOException("Key column '" + key + "' not found in: " + path);
+        }
         Map<String, Map<String, String>> rows = new LinkedHashMap<>();
         int duplicates = 0;
         int invalid = 0;
@@ -151,7 +169,7 @@ public class Main {
         return fields;
     }
 
-    private static Report diff(Roster previous, Roster current, String key) {
+    private static Report diff(Roster previous, Roster current, String key, Set<String> ignoredFields) {
         Set<String> prevKeys = previous.rows.keySet();
         Set<String> curKeys = current.rows.keySet();
 
@@ -167,12 +185,21 @@ public class Main {
         List<Update> updates = new ArrayList<>();
         int unchanged = 0;
         Map<String, Integer> fieldChangeCounts = new LinkedHashMap<>();
+        Set<String> unknownIgnored = new HashSet<>();
+        for (String ignored : ignoredFields) {
+            if (!previous.header.contains(ignored)) {
+                unknownIgnored.add(ignored);
+            }
+        }
 
         for (String sharedKey : shared) {
             Map<String, String> prevRow = previous.rows.get(sharedKey);
             Map<String, String> curRow = current.rows.get(sharedKey);
             Map<String, Change> changes = new LinkedHashMap<>();
             for (String field : previous.header) {
+                if (ignoredFields.contains(field)) {
+                    continue;
+                }
                 String before = prevRow.getOrDefault(field, "");
                 String after = curRow.getOrDefault(field, "");
                 if (!before.equals(after)) {
@@ -189,7 +216,8 @@ public class Main {
 
         updates.sort(Comparator.comparing(update -> update.key));
 
-        return new Report(previous, current, key, added, removed, updates, unchanged, fieldChangeCounts);
+        return new Report(previous, current, key, added, removed, updates, unchanged, fieldChangeCounts,
+                ignoredFields, unknownIgnored);
     }
 
     private record Roster(List<String> header, Map<String, Map<String, String>> rows, int duplicates, int invalid,
@@ -208,10 +236,13 @@ public class Main {
         private final List<Update> updates;
         private final int unchanged;
         private final Map<String, Integer> fieldChangeCounts;
+        private final Set<String> ignoredFields;
+        private final Set<String> unknownIgnoredFields;
         private final LocalDateTime timestamp;
 
         private Report(Roster previous, Roster current, String key, Set<String> added, Set<String> removed, List<Update> updates,
-                       int unchanged, Map<String, Integer> fieldChangeCounts) {
+                       int unchanged, Map<String, Integer> fieldChangeCounts, Set<String> ignoredFields,
+                       Set<String> unknownIgnoredFields) {
             this.previous = previous;
             this.current = current;
             this.key = key;
@@ -220,6 +251,8 @@ public class Main {
             this.updates = updates;
             this.unchanged = unchanged;
             this.fieldChangeCounts = fieldChangeCounts;
+            this.ignoredFields = ignoredFields;
+            this.unknownIgnoredFields = unknownIgnoredFields;
             this.timestamp = LocalDateTime.now();
         }
 
@@ -242,6 +275,18 @@ public class Main {
             sb.append("- duplicate_keys_current: ").append(current.duplicates).append("\n");
             sb.append("- invalid_rows_previous: ").append(previous.invalid).append("\n");
             sb.append("- invalid_rows_current: ").append(current.invalid).append("\n\n");
+
+            if (!ignoredFields.isEmpty()) {
+                sb.append("Ignored Fields:\n");
+                ignoredFields.stream().sorted().forEach(field -> sb.append("  - ").append(field).append("\n"));
+                sb.append("\n");
+            }
+
+            if (!unknownIgnoredFields.isEmpty()) {
+                sb.append("Unknown Ignored Fields:\n");
+                unknownIgnoredFields.stream().sorted().forEach(field -> sb.append("  - ").append(field).append("\n"));
+                sb.append("\n");
+            }
 
             if (!fieldChangeCounts.isEmpty()) {
                 sb.append("Field Change Counts:\n");
@@ -323,6 +368,12 @@ public class Main {
             sb.append("    \"invalid_rows_previous\": ").append(previous.invalid).append(",\n");
             sb.append("    \"invalid_rows_current\": ").append(current.invalid).append("\n");
             sb.append("  },\n");
+            sb.append("  \"ignored_fields\": [\n");
+            sb.append(joinJsonArray(ignoredFields));
+            sb.append("  ],\n");
+            sb.append("  \"unknown_ignored_fields\": [\n");
+            sb.append(joinJsonArray(unknownIgnoredFields));
+            sb.append("  ],\n");
             sb.append("  \"field_change_counts\": {\n");
             sb.append(joinJsonMap(fieldChangeCounts));
             sb.append("  },\n");

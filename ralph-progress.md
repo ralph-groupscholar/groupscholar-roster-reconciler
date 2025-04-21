@@ -1,5 +1,9 @@
 # Ralph Progress Log
 
+## Iteration 45 - 2026-02-08
+- added --ignore support with ignored/unknown field reporting in text + JSON reports
+- updated README with ignore usage guidance
+
 ## Iteration 3 - 2026-02-07
 - started groupscholar-roster-reconciler (Java CLI)
 - implemented CSV parsing, roster diffing, and summary + change reporting

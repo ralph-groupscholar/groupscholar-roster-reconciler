@@ -24,6 +24,12 @@ Run:
 java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email
 ```
 
+Ignore fields when diffing:
+
+```bash
+java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --ignore last_login,notes
+```
+
 Optional JSON output:
 
 ```bash
@@ -34,6 +40,7 @@ java -cp out Main --previous data/roster_prev.csv --current data/roster_current.
 - Both CSVs should have a header row.
 - The key column (default `email`) must be present in both files.
 - If a row has a missing key value, it is counted as invalid.
+- Use `--ignore` to skip volatile fields (e.g., `last_login`) in the diff.
 
 ## Example Output (Summary)
 ```
