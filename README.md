@@ -7,8 +7,10 @@ Group Scholar Roster Reconciler is a local-first CLI that compares two roster CS
 - Summaries for additions, removals, updates, unchanged rows, and duplicates.
 - Field-level change detail for updated records.
 - Field change counts plus duplicate key and invalid row diagnostics.
+- Column-level change reporting (added/removed columns).
 - CSV parsing with quoted field support.
 - Optional JSON report output for downstream workflows.
+- Optional CSV export bundle for added/removed/updated (and unchanged) rows.
 
 ## Usage
 
@@ -35,6 +37,24 @@ Optional JSON output:
 ```bash
 java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --json report.json
 ```
+
+Optional CSV export bundle:
+
+```bash
+java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --export-dir out/exports
+```
+
+Include unchanged rows:
+
+```bash
+java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --export-dir out/exports --export-unchanged
+```
+
+Export files written to `--export-dir`:
+- `added.csv` (rows from current)
+- `removed.csv` (rows from previous)
+- `updated.csv` (key + field + before + after)
+- `unchanged.csv` (only if `--export-unchanged` is set)
 
 ## Input Expectations
 - Both CSVs should have a header row.

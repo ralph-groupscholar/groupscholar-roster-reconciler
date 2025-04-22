@@ -14,3 +14,8 @@
 - added field change counts plus duplicate key + invalid row detail to text and JSON reports
 - extended roster parsing to retain duplicate key values and invalid row numbers for diagnostics
 - updated README with new report details
+
+## Iteration 55 - 2026-02-08
+- added CSV export bundle for added/removed/updated rows with optional unchanged export
+- implemented CSV writer with proper escaping and deterministic ordering
+- documented export options in README

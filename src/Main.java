@@ -26,6 +26,8 @@ public class Main {
         String currentPath = options.get("current");
         String key = options.getOrDefault("key", DEFAULT_KEY);
         String jsonPath = options.get("json");
+        String exportDir = options.get("export-dir");
+        boolean exportUnchanged = options.containsKey("export-unchanged");
         Set<String> ignoredFields = parseIgnoredFields(options.get("ignore"));
 
         try {
@@ -39,6 +41,10 @@ public class Main {
             if (jsonPath != null && !jsonPath.isBlank()) {
                 Files.writeString(Path.of(jsonPath), report.toJson(previousPath, currentPath), StandardCharsets.UTF_8);
             }
+
+            if (exportDir != null && !exportDir.isBlank()) {
+                report.writeExports(Path.of(exportDir), exportUnchanged);
+            }
         } catch (IOException e) {
             System.err.println("Error: " + e.getMessage());
             System.exit(1);
@@ -46,7 +52,7 @@ public class Main {
     }
 
     private static void printUsage() {
-        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--ignore field1,field2] [--json report.json]");
+        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--ignore field1,field2] [--json report.json] [--export-dir outdir] [--export-unchanged]");
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -182,24 +188,39 @@ public class Main {
         Set<String> shared = new HashSet<>(prevKeys);
         shared.retainAll(curKeys);
 
-        List<Update> updates = new ArrayList<>();
-        int unchanged = 0;
-        Map<String, Integer> fieldChangeCounts = new LinkedHashMap<>();
+        Set<String> addedColumns = new HashSet<>(current.header);
+        addedColumns.removeAll(previous.header);
+
+        Set<String> removedColumns = new HashSet<>(previous.header);
+        removedColumns.removeAll(current.header);
+
+        Set<String> combinedHeaders = new HashSet<>(previous.header);
+        combinedHeaders.addAll(current.header);
         Set<String> unknownIgnored = new HashSet<>();
         for (String ignored : ignoredFields) {
-            if (!previous.header.contains(ignored)) {
+            if (!combinedHeaders.contains(ignored)) {
                 unknownIgnored.add(ignored);
             }
         }
+
+        List<String> comparableFields = new ArrayList<>();
+        Set<String> currentHeaderSet = new HashSet<>(current.header);
+        for (String field : previous.header) {
+            if (currentHeaderSet.contains(field) && !ignoredFields.contains(field)) {
+                comparableFields.add(field);
+            }
+        }
+
+        List<Update> updates = new ArrayList<>();
+        int unchanged = 0;
+        Set<String> unchangedKeys = new HashSet<>();
+        Map<String, Integer> fieldChangeCounts = new LinkedHashMap<>();
 
         for (String sharedKey : shared) {
             Map<String, String> prevRow = previous.rows.get(sharedKey);
             Map<String, String> curRow = current.rows.get(sharedKey);
             Map<String, Change> changes = new LinkedHashMap<>();
-            for (String field : previous.header) {
-                if (ignoredFields.contains(field)) {
-                    continue;
-                }
+            for (String field : comparableFields) {
                 String before = prevRow.getOrDefault(field, "");
                 String after = curRow.getOrDefault(field, "");
                 if (!before.equals(after)) {
@@ -209,6 +230,7 @@ public class Main {
             }
             if (changes.isEmpty()) {
                 unchanged++;
+                unchangedKeys.add(sharedKey);
             } else {
                 updates.add(new Update(sharedKey, changes));
             }
@@ -217,7 +239,7 @@ public class Main {
         updates.sort(Comparator.comparing(update -> update.key));
 
         return new Report(previous, current, key, added, removed, updates, unchanged, fieldChangeCounts,
-                ignoredFields, unknownIgnored);
+                ignoredFields, unknownIgnored, addedColumns, removedColumns, unchangedKeys);
     }
 
     private record Roster(List<String> header, Map<String, Map<String, String>> rows, int duplicates, int invalid,
@@ -238,11 +260,15 @@ public class Main {
         private final Map<String, Integer> fieldChangeCounts;
         private final Set<String> ignoredFields;
         private final Set<String> unknownIgnoredFields;
+        private final Set<String> addedColumns;
+        private final Set<String> removedColumns;
+        private final Set<String> unchangedKeys;
         private final LocalDateTime timestamp;
 
         private Report(Roster previous, Roster current, String key, Set<String> added, Set<String> removed, List<Update> updates,
                        int unchanged, Map<String, Integer> fieldChangeCounts, Set<String> ignoredFields,
-                       Set<String> unknownIgnoredFields) {
+                       Set<String> unknownIgnoredFields, Set<String> addedColumns, Set<String> removedColumns,
+                       Set<String> unchangedKeys) {
             this.previous = previous;
             this.current = current;
             this.key = key;
@@ -253,6 +279,9 @@ public class Main {
             this.fieldChangeCounts = fieldChangeCounts;
             this.ignoredFields = ignoredFields;
             this.unknownIgnoredFields = unknownIgnoredFields;
+            this.addedColumns = addedColumns;
+            this.removedColumns = removedColumns;
+            this.unchangedKeys = unchangedKeys;
             this.timestamp = LocalDateTime.now();
         }
 
@@ -285,6 +314,17 @@ public class Main {
             if (!unknownIgnoredFields.isEmpty()) {
                 sb.append("Unknown Ignored Fields:\n");
                 unknownIgnoredFields.stream().sorted().forEach(field -> sb.append("  - ").append(field).append("\n"));
+                sb.append("\n");
+            }
+
+            if (!addedColumns.isEmpty() || !removedColumns.isEmpty()) {
+                sb.append("Column Changes:\n");
+                if (!addedColumns.isEmpty()) {
+                    sb.append("  added: ").append(String.join(", ", addedColumns.stream().sorted().toList())).append("\n");
+                }
+                if (!removedColumns.isEmpty()) {
+                    sb.append("  removed: ").append(String.join(", ", removedColumns.stream().sorted().toList())).append("\n");
+                }
                 sb.append("\n");
             }
 
@@ -355,6 +395,12 @@ public class Main {
             sb.append("  \"previous\": \"").append(escape(previousPath)).append("\",\n");
             sb.append("  \"current\": \"").append(escape(currentPath)).append("\",\n");
             sb.append("  \"key\": \"").append(escape(key)).append("\",\n");
+            sb.append("  \"ignored_fields\": [\n");
+            sb.append(joinJsonArray(ignoredFields));
+            sb.append("  ],\n");
+            sb.append("  \"unknown_ignored_fields\": [\n");
+            sb.append(joinJsonArray(unknownIgnoredFields));
+            sb.append("  ],\n");
             sb.append("  \"timestamp\": \"").append(timestamp).append("\",\n");
             sb.append("  \"summary\": {\n");
             sb.append("    \"total_previous\": ").append(previous.rows.size()).append(",\n");
@@ -368,12 +414,14 @@ public class Main {
             sb.append("    \"invalid_rows_previous\": ").append(previous.invalid).append(",\n");
             sb.append("    \"invalid_rows_current\": ").append(current.invalid).append("\n");
             sb.append("  },\n");
-            sb.append("  \"ignored_fields\": [\n");
-            sb.append(joinJsonArray(ignoredFields));
-            sb.append("  ],\n");
-            sb.append("  \"unknown_ignored_fields\": [\n");
-            sb.append(joinJsonArray(unknownIgnoredFields));
-            sb.append("  ],\n");
+            sb.append("  \"column_changes\": {\n");
+            sb.append("    \"added\": [\n");
+            sb.append(joinJsonArray(addedColumns));
+            sb.append("    ],\n");
+            sb.append("    \"removed\": [\n");
+            sb.append(joinJsonArray(removedColumns));
+            sb.append("    ]\n");
+            sb.append("  },\n");
             sb.append("  \"field_change_counts\": {\n");
             sb.append(joinJsonMap(fieldChangeCounts));
             sb.append("  },\n");
@@ -429,6 +477,72 @@ public class Main {
             sb.append("  ]\n");
             sb.append("}\n");
             return sb.toString();
+        }
+
+        private void writeExports(Path exportDir, boolean includeUnchanged) throws IOException {
+            Files.createDirectories(exportDir);
+            writeRosterExport(exportDir.resolve("added.csv"), current.header, added, current.rows);
+            writeRosterExport(exportDir.resolve("removed.csv"), previous.header, removed, previous.rows);
+            writeUpdatedExport(exportDir.resolve("updated.csv"));
+            if (includeUnchanged) {
+                writeRosterExport(exportDir.resolve("unchanged.csv"), current.header, unchangedKeys, current.rows);
+            }
+        }
+
+        private void writeRosterExport(Path output, List<String> header, Set<String> keys, Map<String, Map<String, String>> rows)
+                throws IOException {
+            List<String> lines = new ArrayList<>();
+            lines.add(joinCsvLine(header));
+            List<String> sortedKeys = new ArrayList<>(keys);
+            sortedKeys.sort(String::compareTo);
+            for (String keyValue : sortedKeys) {
+                Map<String, String> row = rows.get(keyValue);
+                if (row == null) {
+                    continue;
+                }
+                List<String> values = new ArrayList<>();
+                for (String field : header) {
+                    values.add(row.getOrDefault(field, ""));
+                }
+                lines.add(joinCsvLine(values));
+            }
+            Files.write(output, lines, StandardCharsets.UTF_8);
+        }
+
+        private void writeUpdatedExport(Path output) throws IOException {
+            List<String> lines = new ArrayList<>();
+            List<String> header = List.of(key, "field", "before", "after");
+            lines.add(joinCsvLine(header));
+            for (Update update : updates) {
+                for (Map.Entry<String, Change> entry : update.changes.entrySet()) {
+                    List<String> values = List.of(update.key, entry.getKey(), entry.getValue().before, entry.getValue().after);
+                    lines.add(joinCsvLine(values));
+                }
+            }
+            Files.write(output, lines, StandardCharsets.UTF_8);
+        }
+
+        private String joinCsvLine(List<String> values) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < values.size(); i++) {
+                sb.append(escapeCsv(values.get(i)));
+                if (i < values.size() - 1) {
+                    sb.append(",");
+                }
+            }
+            return sb.toString();
+        }
+
+        private String escapeCsv(String value) {
+            if (value == null) {
+                return "";
+            }
+            boolean needsQuotes = value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r");
+            String escaped = value.replace("\"", "\"\"");
+            if (needsQuotes) {
+                return "\"" + escaped + "\"";
+            }
+            return escaped;
         }
 
         private String joinJsonArray(Set<String> values) {
