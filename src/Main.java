@@ -25,15 +25,17 @@ public class Main {
         String previousPath = options.get("previous");
         String currentPath = options.get("current");
         String key = options.getOrDefault("key", DEFAULT_KEY);
+        String keyNormalize = options.getOrDefault("key-normalize", "none");
         String jsonPath = options.get("json");
         String exportDir = options.get("export-dir");
         boolean exportUnchanged = options.containsKey("export-unchanged");
         Set<String> ignoredFields = parseIgnoredFields(options.get("ignore"));
 
         try {
-            Roster previous = readRoster(Path.of(previousPath), key);
-            Roster current = readRoster(Path.of(currentPath), key);
-            Report report = diff(previous, current, key, ignoredFields);
+            validateKeyNormalize(keyNormalize);
+            Roster previous = readRoster(Path.of(previousPath), key, keyNormalize);
+            Roster current = readRoster(Path.of(currentPath), key, keyNormalize);
+            Report report = diff(previous, current, key, ignoredFields, keyNormalize);
 
             String output = report.toText(previousPath, currentPath);
             System.out.println(output);
@@ -52,7 +54,7 @@ public class Main {
     }
 
     private static void printUsage() {
-        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--ignore field1,field2] [--json report.json] [--export-dir outdir] [--export-unchanged]");
+        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--ignore field1,field2] [--json report.json] [--export-dir outdir] [--export-unchanged]");
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -88,7 +90,24 @@ public class Main {
         return ignored;
     }
 
-    private static Roster readRoster(Path path, String key) throws IOException {
+    private static void validateKeyNormalize(String keyNormalize) throws IOException {
+        if (!keyNormalize.equals("none") && !keyNormalize.equals("lower") && !keyNormalize.equals("upper")) {
+            throw new IOException("Invalid --key-normalize value: " + keyNormalize + " (use none|lower|upper)");
+        }
+    }
+
+    private static String normalizeKeyValue(String value, String keyNormalize) {
+        if (value == null) {
+            return "";
+        }
+        return switch (keyNormalize) {
+            case "lower" -> value.toLowerCase();
+            case "upper" -> value.toUpperCase();
+            default -> value;
+        };
+    }
+
+    private static Roster readRoster(Path path, String key, String keyNormalize) throws IOException {
         List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
         if (lines.isEmpty()) {
             throw new IOException("CSV is empty: " + path);
@@ -130,13 +149,14 @@ public class Main {
                 continue;
             }
 
-            if (rows.containsKey(keyValue)) {
+            String normalizedKey = normalizeKeyValue(keyValue, keyNormalize);
+            if (rows.containsKey(normalizedKey)) {
                 duplicates++;
-                duplicateKeys.add(keyValue);
+                duplicateKeys.add(normalizedKey);
                 continue;
             }
 
-            rows.put(keyValue, row);
+            rows.put(normalizedKey, row);
         }
 
         return new Roster(header, rows, duplicates, invalid, duplicateKeys, invalidRows);
@@ -175,7 +195,7 @@ public class Main {
         return fields;
     }
 
-    private static Report diff(Roster previous, Roster current, String key, Set<String> ignoredFields) {
+    private static Report diff(Roster previous, Roster current, String key, Set<String> ignoredFields, String keyNormalize) {
         Set<String> prevKeys = previous.rows.keySet();
         Set<String> curKeys = current.rows.keySet();
 
@@ -238,7 +258,7 @@ public class Main {
 
         updates.sort(Comparator.comparing(update -> update.key));
 
-        return new Report(previous, current, key, added, removed, updates, unchanged, fieldChangeCounts,
+        return new Report(previous, current, key, keyNormalize, added, removed, updates, unchanged, fieldChangeCounts,
                 ignoredFields, unknownIgnored, addedColumns, removedColumns, unchangedKeys);
     }
 
@@ -253,6 +273,7 @@ public class Main {
         private final Roster previous;
         private final Roster current;
         private final String key;
+        private final String keyNormalize;
         private final Set<String> added;
         private final Set<String> removed;
         private final List<Update> updates;
@@ -265,13 +286,14 @@ public class Main {
         private final Set<String> unchangedKeys;
         private final LocalDateTime timestamp;
 
-        private Report(Roster previous, Roster current, String key, Set<String> added, Set<String> removed, List<Update> updates,
-                       int unchanged, Map<String, Integer> fieldChangeCounts, Set<String> ignoredFields,
+        private Report(Roster previous, Roster current, String key, String keyNormalize, Set<String> added, Set<String> removed,
+                       List<Update> updates, int unchanged, Map<String, Integer> fieldChangeCounts, Set<String> ignoredFields,
                        Set<String> unknownIgnoredFields, Set<String> addedColumns, Set<String> removedColumns,
                        Set<String> unchangedKeys) {
             this.previous = previous;
             this.current = current;
             this.key = key;
+            this.keyNormalize = keyNormalize;
             this.added = added;
             this.removed = removed;
             this.updates = updates;
@@ -291,6 +313,7 @@ public class Main {
             sb.append("Previous: ").append(previousPath).append("\n");
             sb.append("Current: ").append(currentPath).append("\n");
             sb.append("Key: ").append(key).append("\n");
+            sb.append("Key Normalize: ").append(keyNormalize).append("\n");
             sb.append("Timestamp: ").append(timestamp).append("\n\n");
 
             sb.append("Summary:\n");
@@ -395,6 +418,7 @@ public class Main {
             sb.append("  \"previous\": \"").append(escape(previousPath)).append("\",\n");
             sb.append("  \"current\": \"").append(escape(currentPath)).append("\",\n");
             sb.append("  \"key\": \"").append(escape(key)).append("\",\n");
+            sb.append("  \"key_normalize\": \"").append(escape(keyNormalize)).append("\",\n");
             sb.append("  \"ignored_fields\": [\n");
             sb.append(joinJsonArray(ignoredFields));
             sb.append("  ],\n");
