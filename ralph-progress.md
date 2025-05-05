@@ -1,9 +1,8 @@
 # Ralph Progress Log
 
-## Iteration 94 - 2026-02-08
-- added value normalization (trim/collapse) for whitespace-insensitive diffs
-- surfaced value-normalize setting in text + JSON report headers
-- documented value normalization usage in README
+## Iteration 111 - 2026-02-08
+- added change rate metrics (net change and added/removed/updated/unchanged percentages) to text + JSON reports
+- documented new change rate metrics in README
 
 ## Iteration 110 - 2026-02-08
 - added key normalization option (none/lower/upper) for case-insensitive roster matching

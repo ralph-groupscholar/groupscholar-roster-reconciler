@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -308,6 +309,7 @@ public class Main {
         private final Set<String> removedColumns;
         private final Set<String> unchangedKeys;
         private final LocalDateTime timestamp;
+        private final int sharedCount;
 
         private Report(Roster previous, Roster current, String key, String keyNormalize, String valueNormalize,
                        Set<String> added, Set<String> removed, List<Update> updates, int unchanged,
@@ -330,6 +332,7 @@ public class Main {
             this.removedColumns = removedColumns;
             this.unchangedKeys = unchangedKeys;
             this.timestamp = LocalDateTime.now();
+            this.sharedCount = updates.size() + unchanged;
         }
 
         private String toText(String previousPath, String currentPath) {
@@ -352,7 +355,15 @@ public class Main {
             sb.append("- duplicate_keys_previous: ").append(previous.duplicates).append("\n");
             sb.append("- duplicate_keys_current: ").append(current.duplicates).append("\n");
             sb.append("- invalid_rows_previous: ").append(previous.invalid).append("\n");
-            sb.append("- invalid_rows_current: ").append(current.invalid).append("\n\n");
+            sb.append("- invalid_rows_current: ").append(current.invalid).append("\n");
+            sb.append("- net_change: ").append(current.rows.size() - previous.rows.size()).append("\n");
+            sb.append("- net_change_pct_previous: ")
+                    .append(formatPercent(current.rows.size() - previous.rows.size(), previous.rows.size()))
+                    .append("\n");
+            sb.append("- added_pct_current: ").append(formatPercent(added.size(), current.rows.size())).append("\n");
+            sb.append("- removed_pct_previous: ").append(formatPercent(removed.size(), previous.rows.size())).append("\n");
+            sb.append("- updated_pct_shared: ").append(formatPercent(updates.size(), sharedCount)).append("\n");
+            sb.append("- unchanged_pct_shared: ").append(formatPercent(unchanged, sharedCount)).append("\n\n");
 
             if (!ignoredFields.isEmpty()) {
                 sb.append("Ignored Fields:\n");
@@ -463,7 +474,17 @@ public class Main {
             sb.append("    \"duplicate_keys_previous\": ").append(previous.duplicates).append(",\n");
             sb.append("    \"duplicate_keys_current\": ").append(current.duplicates).append(",\n");
             sb.append("    \"invalid_rows_previous\": ").append(previous.invalid).append(",\n");
-            sb.append("    \"invalid_rows_current\": ").append(current.invalid).append("\n");
+            sb.append("    \"invalid_rows_current\": ").append(current.invalid).append(",\n");
+            sb.append("    \"net_change\": ").append(current.rows.size() - previous.rows.size()).append(",\n");
+            sb.append("    \"net_change_pct_previous\": ")
+                    .append(formatRatio(current.rows.size() - previous.rows.size(), previous.rows.size()))
+                    .append("\n");
+            sb.append("  },\n");
+            sb.append("  \"change_rates\": {\n");
+            sb.append("    \"added_of_current\": ").append(formatRatio(added.size(), current.rows.size())).append(",\n");
+            sb.append("    \"removed_of_previous\": ").append(formatRatio(removed.size(), previous.rows.size())).append(",\n");
+            sb.append("    \"updated_of_shared\": ").append(formatRatio(updates.size(), sharedCount)).append(",\n");
+            sb.append("    \"unchanged_of_shared\": ").append(formatRatio(unchanged, sharedCount)).append("\n");
             sb.append("  },\n");
             sb.append("  \"column_changes\": {\n");
             sb.append("    \"added\": [\n");
@@ -658,6 +679,22 @@ public class Main {
                 }
             }
             return sb.toString();
+        }
+
+        private String formatPercent(double numerator, double denominator) {
+            if (denominator == 0) {
+                return "n/a";
+            }
+            double pct = (numerator / denominator) * 100.0;
+            return String.format(Locale.US, "%.2f%%", pct);
+        }
+
+        private String formatRatio(double numerator, double denominator) {
+            if (denominator == 0) {
+                return "null";
+            }
+            double ratio = numerator / denominator;
+            return String.format(Locale.US, "%.4f", ratio);
         }
 
         private String escape(String input) {
