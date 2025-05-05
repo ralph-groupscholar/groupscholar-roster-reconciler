@@ -26,6 +26,7 @@ public class Main {
         String currentPath = options.get("current");
         String key = options.getOrDefault("key", DEFAULT_KEY);
         String keyNormalize = options.getOrDefault("key-normalize", "none");
+        String valueNormalize = options.getOrDefault("value-normalize", "none");
         String jsonPath = options.get("json");
         String exportDir = options.get("export-dir");
         boolean exportUnchanged = options.containsKey("export-unchanged");
@@ -33,9 +34,10 @@ public class Main {
 
         try {
             validateKeyNormalize(keyNormalize);
+            validateValueNormalize(valueNormalize);
             Roster previous = readRoster(Path.of(previousPath), key, keyNormalize);
             Roster current = readRoster(Path.of(currentPath), key, keyNormalize);
-            Report report = diff(previous, current, key, ignoredFields, keyNormalize);
+            Report report = diff(previous, current, key, ignoredFields, keyNormalize, valueNormalize);
 
             String output = report.toText(previousPath, currentPath);
             System.out.println(output);
@@ -54,7 +56,7 @@ public class Main {
     }
 
     private static void printUsage() {
-        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--ignore field1,field2] [--json report.json] [--export-dir outdir] [--export-unchanged]");
+        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--value-normalize none|trim|collapse] [--ignore field1,field2] [--json report.json] [--export-dir outdir] [--export-unchanged]");
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -96,6 +98,12 @@ public class Main {
         }
     }
 
+    private static void validateValueNormalize(String valueNormalize) throws IOException {
+        if (!valueNormalize.equals("none") && !valueNormalize.equals("trim") && !valueNormalize.equals("collapse")) {
+            throw new IOException("Invalid --value-normalize value: " + valueNormalize + " (use none|trim|collapse)");
+        }
+    }
+
     private static String normalizeKeyValue(String value, String keyNormalize) {
         if (value == null) {
             return "";
@@ -103,6 +111,17 @@ public class Main {
         return switch (keyNormalize) {
             case "lower" -> value.toLowerCase();
             case "upper" -> value.toUpperCase();
+            default -> value;
+        };
+    }
+
+    private static String normalizeFieldValue(String value, String valueNormalize) {
+        if (value == null) {
+            return "";
+        }
+        return switch (valueNormalize) {
+            case "trim" -> value.trim();
+            case "collapse" -> value.trim().replaceAll("\\s+", " ");
             default -> value;
         };
     }
@@ -195,7 +214,8 @@ public class Main {
         return fields;
     }
 
-    private static Report diff(Roster previous, Roster current, String key, Set<String> ignoredFields, String keyNormalize) {
+    private static Report diff(Roster previous, Roster current, String key, Set<String> ignoredFields,
+                               String keyNormalize, String valueNormalize) {
         Set<String> prevKeys = previous.rows.keySet();
         Set<String> curKeys = current.rows.keySet();
 
@@ -243,7 +263,9 @@ public class Main {
             for (String field : comparableFields) {
                 String before = prevRow.getOrDefault(field, "");
                 String after = curRow.getOrDefault(field, "");
-                if (!before.equals(after)) {
+                String beforeNormalized = normalizeFieldValue(before, valueNormalize);
+                String afterNormalized = normalizeFieldValue(after, valueNormalize);
+                if (!beforeNormalized.equals(afterNormalized)) {
                     changes.put(field, new Change(before, after));
                     fieldChangeCounts.put(field, fieldChangeCounts.getOrDefault(field, 0) + 1);
                 }
@@ -258,8 +280,8 @@ public class Main {
 
         updates.sort(Comparator.comparing(update -> update.key));
 
-        return new Report(previous, current, key, keyNormalize, added, removed, updates, unchanged, fieldChangeCounts,
-                ignoredFields, unknownIgnored, addedColumns, removedColumns, unchangedKeys);
+        return new Report(previous, current, key, keyNormalize, valueNormalize, added, removed, updates, unchanged,
+                fieldChangeCounts, ignoredFields, unknownIgnored, addedColumns, removedColumns, unchangedKeys);
     }
 
     private record Roster(List<String> header, Map<String, Map<String, String>> rows, int duplicates, int invalid,
@@ -274,6 +296,7 @@ public class Main {
         private final Roster current;
         private final String key;
         private final String keyNormalize;
+        private final String valueNormalize;
         private final Set<String> added;
         private final Set<String> removed;
         private final List<Update> updates;
@@ -286,14 +309,16 @@ public class Main {
         private final Set<String> unchangedKeys;
         private final LocalDateTime timestamp;
 
-        private Report(Roster previous, Roster current, String key, String keyNormalize, Set<String> added, Set<String> removed,
-                       List<Update> updates, int unchanged, Map<String, Integer> fieldChangeCounts, Set<String> ignoredFields,
+        private Report(Roster previous, Roster current, String key, String keyNormalize, String valueNormalize,
+                       Set<String> added, Set<String> removed, List<Update> updates, int unchanged,
+                       Map<String, Integer> fieldChangeCounts, Set<String> ignoredFields,
                        Set<String> unknownIgnoredFields, Set<String> addedColumns, Set<String> removedColumns,
                        Set<String> unchangedKeys) {
             this.previous = previous;
             this.current = current;
             this.key = key;
             this.keyNormalize = keyNormalize;
+            this.valueNormalize = valueNormalize;
             this.added = added;
             this.removed = removed;
             this.updates = updates;
@@ -314,6 +339,7 @@ public class Main {
             sb.append("Current: ").append(currentPath).append("\n");
             sb.append("Key: ").append(key).append("\n");
             sb.append("Key Normalize: ").append(keyNormalize).append("\n");
+            sb.append("Value Normalize: ").append(valueNormalize).append("\n");
             sb.append("Timestamp: ").append(timestamp).append("\n\n");
 
             sb.append("Summary:\n");
@@ -419,6 +445,7 @@ public class Main {
             sb.append("  \"current\": \"").append(escape(currentPath)).append("\",\n");
             sb.append("  \"key\": \"").append(escape(key)).append("\",\n");
             sb.append("  \"key_normalize\": \"").append(escape(keyNormalize)).append("\",\n");
+            sb.append("  \"value_normalize\": \"").append(escape(valueNormalize)).append("\",\n");
             sb.append("  \"ignored_fields\": [\n");
             sb.append(joinJsonArray(ignoredFields));
             sb.append("  ],\n");

@@ -1,5 +1,10 @@
 # Ralph Progress Log
 
+## Iteration 94 - 2026-02-08
+- added value normalization (trim/collapse) for whitespace-insensitive diffs
+- surfaced value-normalize setting in text + JSON report headers
+- documented value normalization usage in README
+
 ## Iteration 110 - 2026-02-08
 - added key normalization option (none/lower/upper) for case-insensitive roster matching
 - surfaced key normalization setting in text/JSON reports and README usage
