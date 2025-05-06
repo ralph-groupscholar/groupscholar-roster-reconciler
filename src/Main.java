@@ -25,20 +25,22 @@ public class Main {
 
         String previousPath = options.get("previous");
         String currentPath = options.get("current");
-        String key = options.getOrDefault("key", DEFAULT_KEY);
+        String keyRaw = options.getOrDefault("key", DEFAULT_KEY);
+        List<String> keyColumns = parseKeyColumns(keyRaw);
         String keyNormalize = options.getOrDefault("key-normalize", "none");
         String valueNormalize = options.getOrDefault("value-normalize", "none");
         String jsonPath = options.get("json");
         String exportDir = options.get("export-dir");
         boolean exportUnchanged = options.containsKey("export-unchanged");
+        boolean exportUpdatedRows = options.containsKey("export-updated-rows");
         Set<String> ignoredFields = parseIgnoredFields(options.get("ignore"));
 
         try {
             validateKeyNormalize(keyNormalize);
             validateValueNormalize(valueNormalize);
-            Roster previous = readRoster(Path.of(previousPath), key, keyNormalize);
-            Roster current = readRoster(Path.of(currentPath), key, keyNormalize);
-            Report report = diff(previous, current, key, ignoredFields, keyNormalize, valueNormalize);
+            Roster previous = readRoster(Path.of(previousPath), keyColumns, keyNormalize);
+            Roster current = readRoster(Path.of(currentPath), keyColumns, keyNormalize);
+            Report report = diff(previous, current, keyColumns, ignoredFields, keyNormalize, valueNormalize);
 
             String output = report.toText(previousPath, currentPath);
             System.out.println(output);
@@ -48,7 +50,7 @@ public class Main {
             }
 
             if (exportDir != null && !exportDir.isBlank()) {
-                report.writeExports(Path.of(exportDir), exportUnchanged);
+                report.writeExports(Path.of(exportDir), exportUnchanged, exportUpdatedRows);
             }
         } catch (IOException e) {
             System.err.println("Error: " + e.getMessage());
@@ -57,7 +59,7 @@ public class Main {
     }
 
     private static void printUsage() {
-        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--value-normalize none|trim|collapse] [--ignore field1,field2] [--json report.json] [--export-dir outdir] [--export-unchanged]");
+        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--value-normalize none|trim|collapse] [--ignore field1,field2] [--json report.json] [--export-dir outdir] [--export-unchanged] [--export-updated-rows]");
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -91,6 +93,25 @@ public class Main {
             }
         }
         return ignored;
+    }
+
+    private static List<String> parseKeyColumns(String raw) {
+        List<String> columns = new ArrayList<>();
+        if (raw == null || raw.isBlank()) {
+            columns.add(DEFAULT_KEY);
+            return columns;
+        }
+        String[] parts = raw.split(",");
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (!trimmed.isBlank()) {
+                columns.add(trimmed);
+            }
+        }
+        if (columns.isEmpty()) {
+            columns.add(DEFAULT_KEY);
+        }
+        return columns;
     }
 
     private static void validateKeyNormalize(String keyNormalize) throws IOException {
@@ -127,15 +148,33 @@ public class Main {
         };
     }
 
-    private static Roster readRoster(Path path, String key, String keyNormalize) throws IOException {
+    private static String buildCompositeKey(Map<String, String> row, List<String> keyColumns, String keyNormalize) {
+        List<String> parts = new ArrayList<>();
+        for (String keyColumn : keyColumns) {
+            String raw = row.getOrDefault(keyColumn, "").trim();
+            if (raw.isBlank()) {
+                return "";
+            }
+            parts.add(normalizeKeyValue(raw, keyNormalize));
+        }
+        return String.join("||", parts);
+    }
+
+    private static Roster readRoster(Path path, List<String> keyColumns, String keyNormalize) throws IOException {
         List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
         if (lines.isEmpty()) {
             throw new IOException("CSV is empty: " + path);
         }
 
         List<String> header = parseCsvLine(lines.get(0));
-        if (!header.contains(key)) {
-            throw new IOException("Key column '" + key + "' not found in: " + path);
+        List<String> missingKeys = new ArrayList<>();
+        for (String keyColumn : keyColumns) {
+            if (!header.contains(keyColumn)) {
+                missingKeys.add(keyColumn);
+            }
+        }
+        if (!missingKeys.isEmpty()) {
+            throw new IOException("Key column(s) " + String.join(", ", missingKeys) + " not found in: " + path);
         }
         Map<String, Map<String, String>> rows = new LinkedHashMap<>();
         int duplicates = 0;
@@ -162,21 +201,20 @@ public class Main {
                 row.put(header.get(j), values.get(j));
             }
 
-            String keyValue = row.getOrDefault(key, "").trim();
-            if (keyValue.isBlank()) {
+            String compositeKey = buildCompositeKey(row, keyColumns, keyNormalize);
+            if (compositeKey.isBlank()) {
                 invalid++;
                 invalidRows.add(i + 1);
                 continue;
             }
 
-            String normalizedKey = normalizeKeyValue(keyValue, keyNormalize);
-            if (rows.containsKey(normalizedKey)) {
+            if (rows.containsKey(compositeKey)) {
                 duplicates++;
-                duplicateKeys.add(normalizedKey);
+                duplicateKeys.add(compositeKey);
                 continue;
             }
 
-            rows.put(normalizedKey, row);
+            rows.put(compositeKey, row);
         }
 
         return new Roster(header, rows, duplicates, invalid, duplicateKeys, invalidRows);
@@ -215,7 +253,7 @@ public class Main {
         return fields;
     }
 
-    private static Report diff(Roster previous, Roster current, String key, Set<String> ignoredFields,
+    private static Report diff(Roster previous, Roster current, List<String> keyColumns, Set<String> ignoredFields,
                                String keyNormalize, String valueNormalize) {
         Set<String> prevKeys = previous.rows.keySet();
         Set<String> curKeys = current.rows.keySet();
@@ -237,6 +275,12 @@ public class Main {
 
         Set<String> combinedHeaders = new HashSet<>(previous.header);
         combinedHeaders.addAll(current.header);
+        List<String> combinedHeaderList = new ArrayList<>(previous.header);
+        for (String field : current.header) {
+            if (!combinedHeaderList.contains(field)) {
+                combinedHeaderList.add(field);
+            }
+        }
         Set<String> unknownIgnored = new HashSet<>();
         for (String ignored : ignoredFields) {
             if (!combinedHeaders.contains(ignored)) {
@@ -281,8 +325,9 @@ public class Main {
 
         updates.sort(Comparator.comparing(update -> update.key));
 
-        return new Report(previous, current, key, keyNormalize, valueNormalize, added, removed, updates, unchanged,
-                fieldChangeCounts, ignoredFields, unknownIgnored, addedColumns, removedColumns, unchangedKeys);
+        return new Report(previous, current, keyColumns, keyNormalize, valueNormalize, added, removed, updates, unchanged,
+                fieldChangeCounts, ignoredFields, unknownIgnored, addedColumns, removedColumns, unchangedKeys,
+                combinedHeaderList);
     }
 
     private record Roster(List<String> header, Map<String, Map<String, String>> rows, int duplicates, int invalid,
@@ -295,7 +340,7 @@ public class Main {
     private static class Report {
         private final Roster previous;
         private final Roster current;
-        private final String key;
+        private final List<String> keyColumns;
         private final String keyNormalize;
         private final String valueNormalize;
         private final Set<String> added;
@@ -308,17 +353,18 @@ public class Main {
         private final Set<String> addedColumns;
         private final Set<String> removedColumns;
         private final Set<String> unchangedKeys;
+        private final List<String> combinedHeaderList;
         private final LocalDateTime timestamp;
         private final int sharedCount;
 
-        private Report(Roster previous, Roster current, String key, String keyNormalize, String valueNormalize,
+        private Report(Roster previous, Roster current, List<String> keyColumns, String keyNormalize, String valueNormalize,
                        Set<String> added, Set<String> removed, List<Update> updates, int unchanged,
                        Map<String, Integer> fieldChangeCounts, Set<String> ignoredFields,
                        Set<String> unknownIgnoredFields, Set<String> addedColumns, Set<String> removedColumns,
-                       Set<String> unchangedKeys) {
+                       Set<String> unchangedKeys, List<String> combinedHeaderList) {
             this.previous = previous;
             this.current = current;
-            this.key = key;
+            this.keyColumns = keyColumns;
             this.keyNormalize = keyNormalize;
             this.valueNormalize = valueNormalize;
             this.added = added;
@@ -331,6 +377,7 @@ public class Main {
             this.addedColumns = addedColumns;
             this.removedColumns = removedColumns;
             this.unchangedKeys = unchangedKeys;
+            this.combinedHeaderList = combinedHeaderList;
             this.timestamp = LocalDateTime.now();
             this.sharedCount = updates.size() + unchanged;
         }
@@ -340,7 +387,7 @@ public class Main {
             sb.append("Roster Reconciler Report\n");
             sb.append("Previous: ").append(previousPath).append("\n");
             sb.append("Current: ").append(currentPath).append("\n");
-            sb.append("Key: ").append(key).append("\n");
+            sb.append("Key Columns: ").append(String.join(", ", keyColumns)).append("\n");
             sb.append("Key Normalize: ").append(keyNormalize).append("\n");
             sb.append("Value Normalize: ").append(valueNormalize).append("\n");
             sb.append("Timestamp: ").append(timestamp).append("\n\n");
@@ -454,7 +501,10 @@ public class Main {
             sb.append("{\n");
             sb.append("  \"previous\": \"").append(escape(previousPath)).append("\",\n");
             sb.append("  \"current\": \"").append(escape(currentPath)).append("\",\n");
-            sb.append("  \"key\": \"").append(escape(key)).append("\",\n");
+            sb.append("  \"key\": \"").append(escape(String.join(", ", keyColumns))).append("\",\n");
+            sb.append("  \"key_columns\": [\n");
+            sb.append(joinJsonArray(keyColumns, "    "));
+            sb.append("  ],\n");
             sb.append("  \"key_normalize\": \"").append(escape(keyNormalize)).append("\",\n");
             sb.append("  \"value_normalize\": \"").append(escape(valueNormalize)).append("\",\n");
             sb.append("  \"ignored_fields\": [\n");
@@ -551,13 +601,16 @@ public class Main {
             return sb.toString();
         }
 
-        private void writeExports(Path exportDir, boolean includeUnchanged) throws IOException {
+        private void writeExports(Path exportDir, boolean includeUnchanged, boolean includeUpdatedRows) throws IOException {
             Files.createDirectories(exportDir);
             writeRosterExport(exportDir.resolve("added.csv"), current.header, added, current.rows);
             writeRosterExport(exportDir.resolve("removed.csv"), previous.header, removed, previous.rows);
             writeUpdatedExport(exportDir.resolve("updated.csv"));
             if (includeUnchanged) {
                 writeRosterExport(exportDir.resolve("unchanged.csv"), current.header, unchangedKeys, current.rows);
+            }
+            if (includeUpdatedRows) {
+                writeUpdatedRowsExport(exportDir.resolve("updated_rows.csv"));
             }
         }
 
@@ -583,13 +636,39 @@ public class Main {
 
         private void writeUpdatedExport(Path output) throws IOException {
             List<String> lines = new ArrayList<>();
-            List<String> header = List.of(key, "field", "before", "after");
+            List<String> header = List.of("key", "field", "before", "after");
             lines.add(joinCsvLine(header));
             for (Update update : updates) {
                 for (Map.Entry<String, Change> entry : update.changes.entrySet()) {
                     List<String> values = List.of(update.key, entry.getKey(), entry.getValue().before, entry.getValue().after);
                     lines.add(joinCsvLine(values));
                 }
+            }
+            Files.write(output, lines, StandardCharsets.UTF_8);
+        }
+
+        private void writeUpdatedRowsExport(Path output) throws IOException {
+            List<String> lines = new ArrayList<>();
+            List<String> header = new ArrayList<>();
+            header.add("key");
+            for (String field : combinedHeaderList) {
+                header.add(field + "_before");
+                header.add(field + "_after");
+            }
+            lines.add(joinCsvLine(header));
+            for (Update update : updates) {
+                Map<String, String> prevRow = previous.rows.get(update.key);
+                Map<String, String> curRow = current.rows.get(update.key);
+                if (prevRow == null || curRow == null) {
+                    continue;
+                }
+                List<String> values = new ArrayList<>();
+                values.add(update.key);
+                for (String field : combinedHeaderList) {
+                    values.add(prevRow.getOrDefault(field, ""));
+                    values.add(curRow.getOrDefault(field, ""));
+                }
+                lines.add(joinCsvLine(values));
             }
             Files.write(output, lines, StandardCharsets.UTF_8);
         }
@@ -632,9 +711,13 @@ public class Main {
         }
 
         private String joinJsonArray(List<String> values) {
+            return joinJsonArray(values, "      ");
+        }
+
+        private String joinJsonArray(List<String> values, String indent) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < values.size(); i++) {
-                sb.append("      \"").append(escape(values.get(i))).append("\"");
+                sb.append(indent).append("\"").append(escape(values.get(i))).append("\"");
                 if (i < values.size() - 1) {
                     sb.append(",");
                 }

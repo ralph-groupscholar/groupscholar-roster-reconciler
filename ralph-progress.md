@@ -1,5 +1,10 @@
 # Ralph Progress Log
 
+## Iteration 100 - 2026-02-08
+- added composite key support for multi-column matching
+- added optional updated_rows.csv export with full before/after fields
+- updated JSON output and README to document key columns + export option
+
 ## Iteration 111 - 2026-02-08
 - added change rate metrics (net change and added/removed/updated/unchanged percentages) to text + JSON reports
 - documented new change rate metrics in README

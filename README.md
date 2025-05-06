@@ -29,6 +29,12 @@ Run:
 java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email
 ```
 
+Composite key (multiple columns):
+
+```bash
+java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email,cohort
+```
+
 Normalize key values (case-insensitive matching):
 
 ```bash
@@ -65,16 +71,23 @@ Include unchanged rows:
 java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --export-dir out/exports --export-unchanged
 ```
 
+Include full before/after rows for updates:
+
+```bash
+java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --export-dir out/exports --export-updated-rows
+```
+
 Export files written to `--export-dir`:
 - `added.csv` (rows from current)
 - `removed.csv` (rows from previous)
 - `updated.csv` (key + field + before + after)
 - `unchanged.csv` (only if `--export-unchanged` is set)
+- `updated_rows.csv` (only if `--export-updated-rows` is set; full before/after rows)
 
 ## Input Expectations
 - Both CSVs should have a header row.
-- The key column (default `email`) must be present in both files.
-- If a row has a missing key value, it is counted as invalid.
+- The key column(s) (default `email`) must be present in both files.
+- If a row has a missing key value (any part of a composite key), it is counted as invalid.
 - Use `--key-normalize lower|upper` to avoid case-only mismatches in keys.
 - Use `--value-normalize trim|collapse` to ignore whitespace-only changes.
 - Use `--ignore` to skip volatile fields (e.g., `last_login`) in the diff.
@@ -84,8 +97,9 @@ Export files written to `--export-dir`:
 Roster Reconciler Report
 Previous: data/roster_prev.csv
 Current: data/roster_current.csv
-Key: email
+Key Columns: email
 Key Normalize: none
+Value Normalize: none
 Timestamp: 2026-02-07T18:30:00
 
 Summary:
