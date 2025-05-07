@@ -14,6 +14,7 @@ Group Scholar Roster Reconciler is a local-first CLI that compares two roster CS
 - Optional CSV export bundle for added/removed/updated (and unchanged) rows.
 - Optional key normalization (lower/upper) to handle case mismatches.
 - Optional value normalization (trim/collapse) to ignore whitespace-only changes.
+- Optional detail limiting for large rosters.
 
 ## Usage
 
@@ -65,6 +66,12 @@ Optional CSV export bundle:
 java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --export-dir out/exports
 ```
 
+Limit detailed lists in the report (use `0` for full detail):
+
+```bash
+java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --max-detail 100
+```
+
 Include unchanged rows:
 
 ```bash
@@ -91,6 +98,7 @@ Export files written to `--export-dir`:
 - Use `--key-normalize lower|upper` to avoid case-only mismatches in keys.
 - Use `--value-normalize trim|collapse` to ignore whitespace-only changes.
 - Use `--ignore` to skip volatile fields (e.g., `last_login`) in the diff.
+- Use `--max-detail` to cap the number of added/removed/updated entries shown.
 
 ## Example Output (Summary)
 ```

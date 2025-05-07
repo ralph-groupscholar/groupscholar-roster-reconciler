@@ -33,14 +33,16 @@ public class Main {
         String exportDir = options.get("export-dir");
         boolean exportUnchanged = options.containsKey("export-unchanged");
         boolean exportUpdatedRows = options.containsKey("export-updated-rows");
+        int detailLimit = 0;
         Set<String> ignoredFields = parseIgnoredFields(options.get("ignore"));
 
         try {
             validateKeyNormalize(keyNormalize);
             validateValueNormalize(valueNormalize);
+            detailLimit = parseDetailLimit(options.get("max-detail"));
             Roster previous = readRoster(Path.of(previousPath), keyColumns, keyNormalize);
             Roster current = readRoster(Path.of(currentPath), keyColumns, keyNormalize);
-            Report report = diff(previous, current, keyColumns, ignoredFields, keyNormalize, valueNormalize);
+            Report report = diff(previous, current, keyColumns, ignoredFields, keyNormalize, valueNormalize, detailLimit);
 
             String output = report.toText(previousPath, currentPath);
             System.out.println(output);
@@ -59,7 +61,7 @@ public class Main {
     }
 
     private static void printUsage() {
-        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--value-normalize none|trim|collapse] [--ignore field1,field2] [--json report.json] [--export-dir outdir] [--export-unchanged] [--export-updated-rows]");
+        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--value-normalize none|trim|collapse] [--ignore field1,field2] [--max-detail N] [--json report.json] [--export-dir outdir] [--export-unchanged] [--export-updated-rows]");
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -123,6 +125,21 @@ public class Main {
     private static void validateValueNormalize(String valueNormalize) throws IOException {
         if (!valueNormalize.equals("none") && !valueNormalize.equals("trim") && !valueNormalize.equals("collapse")) {
             throw new IOException("Invalid --value-normalize value: " + valueNormalize + " (use none|trim|collapse)");
+        }
+    }
+
+    private static int parseDetailLimit(String raw) throws IOException {
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            if (value < 0) {
+                throw new IOException("Invalid --max-detail value: " + raw + " (must be >= 0)");
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            throw new IOException("Invalid --max-detail value: " + raw + " (must be an integer)", e);
         }
     }
 
@@ -254,7 +271,7 @@ public class Main {
     }
 
     private static Report diff(Roster previous, Roster current, List<String> keyColumns, Set<String> ignoredFields,
-                               String keyNormalize, String valueNormalize) {
+                               String keyNormalize, String valueNormalize, int detailLimit) {
         Set<String> prevKeys = previous.rows.keySet();
         Set<String> curKeys = current.rows.keySet();
 
@@ -327,7 +344,7 @@ public class Main {
 
         return new Report(previous, current, keyColumns, keyNormalize, valueNormalize, added, removed, updates, unchanged,
                 fieldChangeCounts, ignoredFields, unknownIgnored, addedColumns, removedColumns, unchangedKeys,
-                combinedHeaderList);
+                combinedHeaderList, detailLimit);
     }
 
     private record Roster(List<String> header, Map<String, Map<String, String>> rows, int duplicates, int invalid,
@@ -354,6 +371,7 @@ public class Main {
         private final Set<String> removedColumns;
         private final Set<String> unchangedKeys;
         private final List<String> combinedHeaderList;
+        private final int detailLimit;
         private final LocalDateTime timestamp;
         private final int sharedCount;
 
@@ -361,7 +379,7 @@ public class Main {
                        Set<String> added, Set<String> removed, List<Update> updates, int unchanged,
                        Map<String, Integer> fieldChangeCounts, Set<String> ignoredFields,
                        Set<String> unknownIgnoredFields, Set<String> addedColumns, Set<String> removedColumns,
-                       Set<String> unchangedKeys, List<String> combinedHeaderList) {
+                       Set<String> unchangedKeys, List<String> combinedHeaderList, int detailLimit) {
             this.previous = previous;
             this.current = current;
             this.keyColumns = keyColumns;
@@ -378,6 +396,7 @@ public class Main {
             this.removedColumns = removedColumns;
             this.unchangedKeys = unchangedKeys;
             this.combinedHeaderList = combinedHeaderList;
+            this.detailLimit = detailLimit;
             this.timestamp = LocalDateTime.now();
             this.sharedCount = updates.size() + unchanged;
         }
@@ -466,20 +485,36 @@ public class Main {
             }
 
             if (!added.isEmpty()) {
-                sb.append("Added (" + added.size() + "):\n");
-                added.stream().sorted().forEach(k -> sb.append("  + ").append(k).append("\n"));
+                List<String> addedList = sortedList(added);
+                int shown = Math.min(addedList.size(), detailLimitValue());
+                sb.append("Added (" + addedList.size() + "):\n");
+                for (int i = 0; i < shown; i++) {
+                    sb.append("  + ").append(addedList.get(i)).append("\n");
+                }
+                if (shown < addedList.size()) {
+                    sb.append("  ... (showing ").append(shown).append(" of ").append(addedList.size()).append(")\n");
+                }
                 sb.append("\n");
             }
 
             if (!removed.isEmpty()) {
-                sb.append("Removed (" + removed.size() + "):\n");
-                removed.stream().sorted().forEach(k -> sb.append("  - ").append(k).append("\n"));
+                List<String> removedList = sortedList(removed);
+                int shown = Math.min(removedList.size(), detailLimitValue());
+                sb.append("Removed (" + removedList.size() + "):\n");
+                for (int i = 0; i < shown; i++) {
+                    sb.append("  - ").append(removedList.get(i)).append("\n");
+                }
+                if (shown < removedList.size()) {
+                    sb.append("  ... (showing ").append(shown).append(" of ").append(removedList.size()).append(")\n");
+                }
                 sb.append("\n");
             }
 
             if (!updates.isEmpty()) {
+                int shown = Math.min(updates.size(), detailLimitValue());
                 sb.append("Updated (" + updates.size() + "):\n");
-                for (Update update : updates) {
+                for (int i = 0; i < shown; i++) {
+                    Update update = updates.get(i);
                     sb.append("  * ").append(update.key).append("\n");
                     for (Map.Entry<String, Change> entry : update.changes.entrySet()) {
                         sb.append("      ").append(entry.getKey())
@@ -489,6 +524,9 @@ public class Main {
                                 .append(entry.getValue().after)
                                 .append("\"\n");
                     }
+                }
+                if (shown < updates.size()) {
+                    sb.append("  ... (showing ").append(shown).append(" of ").append(updates.size()).append(")\n");
                 }
                 sb.append("\n");
             }
@@ -514,6 +552,14 @@ public class Main {
             sb.append(joinJsonArray(unknownIgnoredFields));
             sb.append("  ],\n");
             sb.append("  \"timestamp\": \"").append(timestamp).append("\",\n");
+            sb.append("  \"detail\": {\n");
+            sb.append("    \"limit\": ").append(detailLimit <= 0 ? "null" : detailLimit).append(",\n");
+            sb.append("    \"truncated\": {\n");
+            sb.append("      \"added\": ").append(isTruncated(added.size())).append(",\n");
+            sb.append("      \"removed\": ").append(isTruncated(removed.size())).append(",\n");
+            sb.append("      \"updated\": ").append(isTruncated(updates.size())).append("\n");
+            sb.append("    }\n");
+            sb.append("  },\n");
             sb.append("  \"summary\": {\n");
             sb.append("    \"total_previous\": ").append(previous.rows.size()).append(",\n");
             sb.append("    \"total_current\": ").append(current.rows.size()).append(",\n");
@@ -564,13 +610,14 @@ public class Main {
             sb.append("    ]\n");
             sb.append("  },\n");
             sb.append("  \"added\": [\n");
-            sb.append(joinJsonArray(added));
+            sb.append(joinJsonArray(sortedList(added), "    ", detailLimitValue()));
             sb.append("  ],\n");
             sb.append("  \"removed\": [\n");
-            sb.append(joinJsonArray(removed));
+            sb.append(joinJsonArray(sortedList(removed), "    ", detailLimitValue()));
             sb.append("  ],\n");
             sb.append("  \"updated\": [\n");
-            for (int i = 0; i < updates.size(); i++) {
+            int updatedShown = Math.min(updates.size(), detailLimitValue());
+            for (int i = 0; i < updatedShown; i++) {
                 Update update = updates.get(i);
                 sb.append("    {\n");
                 sb.append("      \"key\": \"").append(escape(update.key)).append("\",\n");
@@ -591,7 +638,7 @@ public class Main {
                     sb.append("}");
                 }
                 sb.append("\n    }");
-                if (i < updates.size() - 1) {
+                if (i < updatedShown - 1) {
                     sb.append(",");
                 }
                 sb.append("\n");
@@ -724,6 +771,33 @@ public class Main {
                 sb.append("\n");
             }
             return sb.toString();
+        }
+
+        private String joinJsonArray(List<String> values, String indent, int limit) {
+            StringBuilder sb = new StringBuilder();
+            int shown = Math.min(values.size(), limit);
+            for (int i = 0; i < shown; i++) {
+                sb.append(indent).append("\"").append(escape(values.get(i))).append("\"");
+                if (i < shown - 1) {
+                    sb.append(",");
+                }
+                sb.append("\n");
+            }
+            return sb.toString();
+        }
+
+        private List<String> sortedList(Set<String> values) {
+            List<String> sorted = new ArrayList<>(values);
+            sorted.sort(String::compareTo);
+            return sorted;
+        }
+
+        private boolean isTruncated(int total) {
+            return detailLimit > 0 && total > detailLimit;
+        }
+
+        private int detailLimitValue() {
+            return detailLimit > 0 ? detailLimit : Integer.MAX_VALUE;
         }
 
         private String joinJsonIntArray(List<Integer> values) {

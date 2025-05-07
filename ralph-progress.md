@@ -1,5 +1,10 @@
 # Ralph Progress Log
 
+## Iteration 112 - 2026-02-08
+- added --max-detail to cap added/removed/updated detail in text and JSON outputs
+- included JSON detail metadata for truncation visibility
+- added smoke test script for max-detail behavior
+
 ## Iteration 100 - 2026-02-08
 - added composite key support for multi-column matching
 - added optional updated_rows.csv export with full before/after fields
