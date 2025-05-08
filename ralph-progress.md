@@ -1,5 +1,10 @@
 # Ralph Progress Log
 
+## Iteration 113 - 2026-02-08
+- added missing key field counts to text/JSON reports for invalid rows
+- introduced MainTest.java with CSV parsing and missing key coverage tests
+- documented max-detail usage and test commands in README
+
 ## Iteration 112 - 2026-02-08
 - added --max-detail to cap added/removed/updated detail in text and JSON outputs
 - included JSON detail metadata for truncation visibility
