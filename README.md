@@ -8,6 +8,7 @@ Group Scholar Roster Reconciler is a local-first CLI that compares two roster CS
 - Field-level change detail for updated records.
 - Field change counts plus duplicate key and invalid row diagnostics.
 - Missing key field counts to pinpoint which key columns are blank.
+- Field completeness metrics (non-empty counts + percentages per column).
 - Column-level change reporting (added/removed columns).
 - Change rate metrics (net change and added/removed/updated percentages).
 - CSV parsing with quoted field support.

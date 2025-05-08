@@ -1,5 +1,15 @@
 # Ralph Progress Log
 
+## Iteration 127 - 2026-02-08
+- added field completeness metrics (non-empty counts + percentages) in text and JSON reports
+- tracked total row counts and non-empty counts per column during roster parsing
+- extended tests to cover field completeness counts
+
+## Iteration 33 - 2026-02-08
+- added summary-only mode for text reports
+- added status.csv export with per-key change classification
+- added lightweight test script for summary-only and status export
+
 ## Iteration 113 - 2026-02-08
 - added missing key field counts to text/JSON reports for invalid rows
 - introduced MainTest.java with CSV parsing and missing key coverage tests

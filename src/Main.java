@@ -2,7 +2,13 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -12,6 +18,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 public class Main {
     private static final String DEFAULT_KEY = "email";
@@ -184,17 +191,24 @@ public class Main {
             throw new IOException("Key column(s) " + String.join(", ", missingKeys) + " not found in: " + path);
         }
         Map<String, Map<String, String>> rows = new LinkedHashMap<>();
+        Map<String, Integer> nonEmptyCounts = new LinkedHashMap<>();
         Map<String, Integer> missingKeyCounts = new LinkedHashMap<>();
         int duplicates = 0;
         int invalid = 0;
+        int totalRows = 0;
         List<String> duplicateKeys = new ArrayList<>();
         List<Integer> invalidRows = new ArrayList<>();
+
+        for (String field : header) {
+            nonEmptyCounts.put(field, 0);
+        }
 
         for (int i = 1; i < lines.size(); i++) {
             String line = lines.get(i).trim();
             if (line.isEmpty()) {
                 continue;
             }
+            totalRows++;
             List<String> values = parseCsvLine(line);
             if (values.size() < header.size()) {
                 while (values.size() < header.size()) {
@@ -206,7 +220,11 @@ public class Main {
 
             Map<String, String> row = new LinkedHashMap<>();
             for (int j = 0; j < header.size(); j++) {
-                row.put(header.get(j), values.get(j));
+                String value = values.get(j);
+                row.put(header.get(j), value);
+                if (!value.trim().isBlank()) {
+                    nonEmptyCounts.put(header.get(j), nonEmptyCounts.get(header.get(j)) + 1);
+                }
             }
 
             List<String> keyParts = new ArrayList<>();
@@ -236,7 +254,7 @@ public class Main {
             rows.put(compositeKey, row);
         }
 
-        return new Roster(header, rows, duplicates, invalid, duplicateKeys, invalidRows, missingKeyCounts);
+        return new Roster(header, rows, duplicates, invalid, duplicateKeys, invalidRows, missingKeyCounts, totalRows, nonEmptyCounts);
     }
 
     static List<String> parseCsvLine(String line) {
@@ -350,7 +368,8 @@ public class Main {
     }
 
     record Roster(List<String> header, Map<String, Map<String, String>> rows, int duplicates, int invalid,
-                  List<String> duplicateKeys, List<Integer> invalidRows, Map<String, Integer> missingKeyCounts) {}
+                  List<String> duplicateKeys, List<Integer> invalidRows, Map<String, Integer> missingKeyCounts,
+                  int totalRows, Map<String, Integer> nonEmptyCounts) {}
 
     record Change(String before, String after) {}
 
@@ -507,6 +526,19 @@ public class Main {
                 sb.append("\n");
             }
 
+            if (!previous.header.isEmpty() || !current.header.isEmpty()) {
+                sb.append("Field Completeness (non-empty/total):\n");
+                if (!previous.header.isEmpty()) {
+                    sb.append("  previous:\n");
+                    appendCompletenessLines(sb, previous, "    ");
+                }
+                if (!current.header.isEmpty()) {
+                    sb.append("  current:\n");
+                    appendCompletenessLines(sb, current, "    ");
+                }
+                sb.append("\n");
+            }
+
             if (!added.isEmpty()) {
                 List<String> addedList = sortedList(added);
                 int shown = Math.min(addedList.size(), detailLimitValue());
@@ -640,6 +672,14 @@ public class Main {
             sb.append("    \"current\": [\n");
             sb.append(joinJsonIntArray(current.invalidRows));
             sb.append("    ]\n");
+            sb.append("  },\n");
+            sb.append("  \"field_completeness\": {\n");
+            sb.append("    \"previous\": {\n");
+            sb.append(joinCompletenessJson(previous, "      "));
+            sb.append("    },\n");
+            sb.append("    \"current\": {\n");
+            sb.append(joinCompletenessJson(current, "      "));
+            sb.append("    }\n");
             sb.append("  },\n");
             sb.append("  \"added\": [\n");
             sb.append(joinJsonArray(sortedList(added), "    ", detailLimitValue()));
@@ -909,6 +949,44 @@ public class Main {
             }
         }
 
+        private void appendCompletenessLines(StringBuilder sb, Roster roster, String indent) {
+            List<String> fields = sortedByCompleteness(roster);
+            for (String field : fields) {
+                int nonEmpty = roster.nonEmptyCounts.getOrDefault(field, 0);
+                sb.append(indent)
+                        .append("- ")
+                        .append(field)
+                        .append(": ")
+                        .append(nonEmpty)
+                        .append("/")
+                        .append(roster.totalRows)
+                        .append(" (")
+                        .append(formatPercent(nonEmpty, roster.totalRows))
+                        .append(")\n");
+            }
+        }
+
+        private List<String> sortedByCompleteness(Roster roster) {
+            List<String> fields = new ArrayList<>(roster.header);
+            fields.sort((a, b) -> {
+                double ratioA = completenessRatio(roster, a);
+                double ratioB = completenessRatio(roster, b);
+                int cmp = Double.compare(ratioA, ratioB);
+                if (cmp != 0) {
+                    return cmp;
+                }
+                return a.compareTo(b);
+            });
+            return fields;
+        }
+
+        private double completenessRatio(Roster roster, String field) {
+            if (roster.totalRows == 0) {
+                return Double.POSITIVE_INFINITY;
+            }
+            return (double) roster.nonEmptyCounts.getOrDefault(field, 0) / (double) roster.totalRows;
+        }
+
         private String joinIntList(List<Integer> values) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < values.size(); i++) {
@@ -941,6 +1019,37 @@ public class Main {
                     .replace("\"", "\\\"")
                     .replace("\n", "\\n")
                     .replace("\r", "\\r");
+        }
+
+        private String joinCompletenessJson(Roster roster, String indent) {
+            StringBuilder sb = new StringBuilder();
+            List<String> fields = sortedByCompleteness(roster);
+            for (int i = 0; i < fields.size(); i++) {
+                String field = fields.get(i);
+                int nonEmpty = roster.nonEmptyCounts.getOrDefault(field, 0);
+                sb.append(indent)
+                        .append("\"")
+                        .append(escape(field))
+                        .append("\": {\n");
+                sb.append(indent)
+                        .append("  \"non_empty\": ")
+                        .append(nonEmpty)
+                        .append(",\n");
+                sb.append(indent)
+                        .append("  \"total\": ")
+                        .append(roster.totalRows)
+                        .append(",\n");
+                sb.append(indent)
+                        .append("  \"pct\": ")
+                        .append(formatRatio(nonEmpty, roster.totalRows))
+                        .append("\n");
+                sb.append(indent).append("}");
+                if (i < fields.size() - 1) {
+                    sb.append(",");
+                }
+                sb.append("\n");
+            }
+            return sb.toString();
         }
     }
 }

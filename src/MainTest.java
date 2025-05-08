@@ -8,6 +8,7 @@ public class MainTest {
     public static void main(String[] args) throws IOException {
         testParseCsvLine();
         testReadRosterMissingKeys();
+        testReadRosterCompleteness();
         System.out.println("MainTest: all tests passed.");
     }
 
@@ -34,6 +35,23 @@ public class MainTest {
         assertEquals(2, roster.invalid(), "readRoster invalid count");
         assertEquals(1, roster.missingKeyCounts().getOrDefault("email", 0), "missing email count");
         assertEquals(1, roster.missingKeyCounts().getOrDefault("cohort", 0), "missing cohort count");
+    }
+
+    private static void testReadRosterCompleteness() throws IOException {
+        Path temp = Files.createTempFile("roster-completeness", ".csv");
+        List<String> lines = List.of(
+                "email,cohort,name",
+                "a@example.com,,Alice",
+                ",Spring,Bob",
+                "c@example.com,Fall,"
+        );
+        Files.write(temp, lines, StandardCharsets.UTF_8);
+
+        Main.Roster roster = Main.readRoster(temp, List.of("email"), "none");
+        assertEquals(3, roster.totalRows(), "completeness total rows");
+        assertEquals(2, roster.nonEmptyCounts().getOrDefault("email", 0), "completeness email");
+        assertEquals(2, roster.nonEmptyCounts().getOrDefault("cohort", 0), "completeness cohort");
+        assertEquals(2, roster.nonEmptyCounts().getOrDefault("name", 0), "completeness name");
     }
 
     private static void assertEquals(int expected, int actual, String label) {
