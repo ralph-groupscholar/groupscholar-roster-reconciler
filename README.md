@@ -34,6 +34,12 @@ Run:
 java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email
 ```
 
+Run with database logging (requires PostgreSQL JDBC jar on classpath):
+
+```bash
+java -cp "out:lib/postgresql-42.7.3.jar" Main --previous data/roster_prev.csv --current data/roster_current.csv --db-log
+```
+
 Composite key (multiple columns):
 
 ```bash
@@ -106,6 +112,15 @@ Summary-only text output (skip detailed lists):
 java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --summary-only
 ```
 
+Log each run to Postgres (optional):
+
+```bash
+export ROSTER_RECONCILER_DB_URL="jdbc:postgresql://host:port/dbname"
+export ROSTER_RECONCILER_DB_USER="user"
+export ROSTER_RECONCILER_DB_PASSWORD="password"
+java -cp "out:lib/postgresql-42.7.3.jar" Main --previous data/roster_prev.csv --current data/roster_current.csv --db-log --db-schema roster_reconciler --db-app roster-reconciler
+```
+
 Export files written to `--export-dir`:
 - `added.csv` (rows from current)
 - `removed.csv` (rows from previous)
@@ -124,6 +139,7 @@ Export files written to `--export-dir`:
 - Use `--ignore` to skip volatile fields (e.g., `last_login`) in the diff.
 - Use `--summary-only` when you only need totals + rates.
 - Use `--max-detail` to cap the number of added/removed/updated entries shown.
+- Use `--db-log` to persist run summaries to Postgres (requires the JDBC jar + env vars).
 
 ## Example Output (Summary)
 ```
@@ -165,8 +181,14 @@ javac -d out src/*.java
 java -cp out MainTest
 ```
 
+## Database
+- Schema and seed SQL live in `db/schema.sql` and `db/seed.sql`.
+- Use `--db-log` to persist run summaries (requires the JDBC jar + env vars).
+
 ## Technologies
 - Java 17 (no external dependencies)
+- PostgreSQL (optional run logging)
+- PostgreSQL JDBC driver (for `--db-log`)
 
 ## Tests
 ```bash

@@ -1,5 +1,10 @@
 # Ralph Progress Log
 
+## Iteration 121 - 2026-02-08
+- added optional Postgres run logging with --db-log and schema validation
+- created db schema/seed SQL and documented JDBC setup in README
+- added PostgreSQL JDBC driver to lib and logged sample seed data in production
+
 ## Iteration 127 - 2026-02-08
 - added field completeness metrics (non-empty counts + percentages) in text and JSON reports
 - tracked total row counts and non-empty counts per column during roster parsing
