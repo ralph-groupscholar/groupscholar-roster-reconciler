@@ -7,8 +7,11 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.time.LocalDateTime;
+import java.sql.Timestamp;
+import java.sql.Types;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -44,7 +47,7 @@ public class Main {
         boolean exportStatus = options.containsKey("export-status");
         boolean summaryOnly = options.containsKey("summary-only");
         boolean dbLog = options.containsKey("db-log");
-        String dbSchema = options.getOrDefault("db-schema", "roster_reconciler");
+        String dbSchema = options.getOrDefault("db-schema", "gs_roster_reconciler");
         String dbApp = options.getOrDefault("db-app", "roster-reconciler");
         int detailLimit = 0;
         Set<String> ignoredFields = parseIgnoredFields(options.get("ignore"));
@@ -83,7 +86,7 @@ public class Main {
     }
 
     private static void printUsage() {
-        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--value-normalize none|trim|collapse] [--ignore field1,field2] [--max-detail N] [--summary-only] [--json report.json] [--export-dir outdir] [--export-unchanged] [--export-updated-rows] [--export-status] [--db-log] [--db-schema roster_reconciler] [--db-app roster-reconciler]");
+        System.out.println("Usage: java -cp out Main --previous <file.csv> --current <file.csv> [--key email] [--key-normalize none|lower|upper] [--value-normalize none|trim|collapse] [--ignore field1,field2] [--max-detail N] [--summary-only] [--json report.json] [--export-dir outdir] [--export-unchanged] [--export-updated-rows] [--export-status] [--db-log] [--db-schema gs_roster_reconciler] [--db-app roster-reconciler]");
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -396,195 +399,6 @@ public class Main {
     record Change(String before, String after) {}
 
     record Update(String key, Map<String, Change> changes) {}
-
-    static class DbRunOptions {
-        private final String exportDir;
-        private final boolean exportUnchanged;
-        private final boolean exportUpdatedRows;
-        private final boolean exportStatus;
-        private final String jsonPath;
-
-        private DbRunOptions(String exportDir, boolean exportUnchanged, boolean exportUpdatedRows, boolean exportStatus, String jsonPath) {
-            this.exportDir = exportDir;
-            this.exportUnchanged = exportUnchanged;
-            this.exportUpdatedRows = exportUpdatedRows;
-            this.exportStatus = exportStatus;
-            this.jsonPath = jsonPath;
-        }
-    }
-
-    static class DbLogger {
-        private static final String ENV_DB_URL = "ROSTER_RECONCILER_DB_URL";
-        private static final String ENV_DB_USER = "ROSTER_RECONCILER_DB_USER";
-        private static final String ENV_DB_PASSWORD = "ROSTER_RECONCILER_DB_PASSWORD";
-
-        static void logRun(Report report, String previousPath, String currentPath, String appName, String schema,
-                           List<String> keyColumns, String keyNormalize, String valueNormalize, boolean summaryOnly,
-                           int detailLimit, DbRunOptions options, Instant startedAt, Instant finishedAt) throws IOException {
-            DbConfig config = DbConfig.fromEnv();
-            String table = schema + ".roster_reconciler_runs";
-
-            try (Connection connection = DriverManager.getConnection(config.url, config.user, config.password)) {
-                ensureSchema(connection, schema, table);
-                insertRun(connection, table, report, previousPath, currentPath, appName, keyColumns, keyNormalize,
-                        valueNormalize, summaryOnly, detailLimit, options, startedAt, finishedAt);
-            } catch (SQLException e) {
-                throw new IOException("Failed to log run to database: " + e.getMessage(), e);
-            }
-        }
-
-        private static void ensureSchema(Connection connection, String schema, String table) throws SQLException {
-            try (Statement statement = connection.createStatement()) {
-                statement.execute("CREATE SCHEMA IF NOT EXISTS " + schema);
-                statement.execute("""
-                        CREATE TABLE IF NOT EXISTS %s (
-                            run_id uuid PRIMARY KEY,
-                            app_name text NOT NULL,
-                            started_at timestamptz NOT NULL,
-                            finished_at timestamptz NOT NULL,
-                            previous_path text NOT NULL,
-                            current_path text NOT NULL,
-                            key_columns text NOT NULL,
-                            key_normalize text NOT NULL,
-                            value_normalize text NOT NULL,
-                            summary_only boolean NOT NULL,
-                            detail_limit integer,
-                            total_previous integer NOT NULL,
-                            total_current integer NOT NULL,
-                            added integer NOT NULL,
-                            removed integer NOT NULL,
-                            updated integer NOT NULL,
-                            unchanged integer NOT NULL,
-                            duplicate_keys_previous integer NOT NULL,
-                            duplicate_keys_current integer NOT NULL,
-                            invalid_rows_previous integer NOT NULL,
-                            invalid_rows_current integer NOT NULL,
-                            net_change integer NOT NULL,
-                            shared_count integer NOT NULL,
-                            added_columns text,
-                            removed_columns text,
-                            ignored_fields text,
-                            unknown_ignored_fields text,
-                            export_dir text,
-                            export_unchanged boolean NOT NULL,
-                            export_updated_rows boolean NOT NULL,
-                            export_status boolean NOT NULL,
-                            json_path text,
-                            created_at timestamptz NOT NULL DEFAULT now()
-                        )
-                        """.formatted(table));
-                statement.execute("CREATE INDEX IF NOT EXISTS roster_reconciler_runs_started_at_idx ON " + table + " (started_at)");
-            }
-        }
-
-        private static void insertRun(Connection connection, String table, Report report, String previousPath, String currentPath,
-                                      String appName, List<String> keyColumns, String keyNormalize, String valueNormalize,
-                                      boolean summaryOnly, int detailLimit, DbRunOptions options, Instant startedAt, Instant finishedAt)
-                throws SQLException {
-            String sql = """
-                    INSERT INTO %s (
-                        run_id, app_name, started_at, finished_at, previous_path, current_path, key_columns,
-                        key_normalize, value_normalize, summary_only, detail_limit, total_previous, total_current,
-                        added, removed, updated, unchanged, duplicate_keys_previous, duplicate_keys_current,
-                        invalid_rows_previous, invalid_rows_current, net_change, shared_count, added_columns,
-                        removed_columns, ignored_fields, unknown_ignored_fields, export_dir, export_unchanged,
-                        export_updated_rows, export_status, json_path
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """.formatted(table);
-            try (PreparedStatement ps = connection.prepareStatement(sql)) {
-                int idx = 1;
-                ps.setObject(idx++, UUID.randomUUID());
-                ps.setString(idx++, appName);
-                ps.setObject(idx++, startedAt);
-                ps.setObject(idx++, finishedAt);
-                ps.setString(idx++, previousPath);
-                ps.setString(idx++, currentPath);
-                ps.setString(idx++, String.join(",", keyColumns));
-                ps.setString(idx++, keyNormalize);
-                ps.setString(idx++, valueNormalize);
-                ps.setBoolean(idx++, summaryOnly);
-                if (detailLimit <= 0) {
-                    ps.setNull(idx++, java.sql.Types.INTEGER);
-                } else {
-                    ps.setInt(idx++, detailLimit);
-                }
-                ps.setInt(idx++, report.previous.rows.size());
-                ps.setInt(idx++, report.current.rows.size());
-                ps.setInt(idx++, report.added.size());
-                ps.setInt(idx++, report.removed.size());
-                ps.setInt(idx++, report.updates.size());
-                ps.setInt(idx++, report.unchanged);
-                ps.setInt(idx++, report.previous.duplicates);
-                ps.setInt(idx++, report.current.duplicates);
-                ps.setInt(idx++, report.previous.invalid);
-                ps.setInt(idx++, report.current.invalid);
-                ps.setInt(idx++, report.current.rows.size() - report.previous.rows.size());
-                ps.setInt(idx++, report.sharedCount);
-                setNullableText(ps, idx++, joinList(report.addedColumns));
-                setNullableText(ps, idx++, joinList(report.removedColumns));
-                setNullableText(ps, idx++, joinList(report.ignoredFields));
-                setNullableText(ps, idx++, joinList(report.unknownIgnoredFields));
-                setNullableText(ps, idx++, blankToNull(options.exportDir));
-                ps.setBoolean(idx++, options.exportUnchanged);
-                ps.setBoolean(idx++, options.exportUpdatedRows);
-                ps.setBoolean(idx++, options.exportStatus);
-                setNullableText(ps, idx, blankToNull(options.jsonPath));
-                ps.executeUpdate();
-            }
-        }
-
-        private static void setNullableText(PreparedStatement ps, int index, String value) throws SQLException {
-            if (value == null || value.isBlank()) {
-                ps.setNull(index, java.sql.Types.VARCHAR);
-            } else {
-                ps.setString(index, value);
-            }
-        }
-
-        private static String blankToNull(String value) {
-            if (value == null || value.isBlank()) {
-                return null;
-            }
-            return value;
-        }
-
-        private static String joinList(Set<String> values) {
-            if (values == null || values.isEmpty()) {
-                return null;
-            }
-            List<String> sorted = new ArrayList<>(values);
-            sorted.sort(String::compareTo);
-            return String.join(",", sorted);
-        }
-    }
-
-    static class DbConfig {
-        private final String url;
-        private final String user;
-        private final String password;
-
-        private DbConfig(String url, String user, String password) {
-            this.url = url;
-            this.user = user;
-            this.password = password;
-        }
-
-        private static DbConfig fromEnv() throws IOException {
-            String url = System.getenv(DbLogger.ENV_DB_URL);
-            String user = System.getenv(DbLogger.ENV_DB_USER);
-            String password = System.getenv(DbLogger.ENV_DB_PASSWORD);
-            if (url == null || url.isBlank()) {
-                throw new IOException("Missing database URL env var: " + DbLogger.ENV_DB_URL);
-            }
-            if (user == null || user.isBlank()) {
-                throw new IOException("Missing database user env var: " + DbLogger.ENV_DB_USER);
-            }
-            if (password == null || password.isBlank()) {
-                throw new IOException("Missing database password env var: " + DbLogger.ENV_DB_PASSWORD);
-            }
-            return new DbConfig(url, user, password);
-        }
-    }
 
     static class Report {
         private final Roster previous;
@@ -1261,6 +1075,499 @@ public class Main {
                 sb.append("\n");
             }
             return sb.toString();
+        }
+    }
+
+    record DbRunOptions(String exportDir, boolean exportUnchanged, boolean exportUpdatedRows,
+                        boolean exportStatus, String jsonPath) {}
+
+    static class DbLogger {
+        private static final String ENV_HOST = "GS_DB_HOST";
+        private static final String ENV_PORT = "GS_DB_PORT";
+        private static final String ENV_NAME = "GS_DB_NAME";
+        private static final String ENV_USER = "GS_DB_USER";
+        private static final String ENV_PASSWORD = "GS_DB_PASSWORD";
+        private static final String ENV_SSLMODE = "GS_DB_SSLMODE";
+
+        static void logRun(Report report, String previousPath, String currentPath, String app, String schema,
+                           List<String> keyColumns, String keyNormalize, String valueNormalize,
+                           boolean summaryOnly, int detailLimit, DbRunOptions runOptions,
+                           Instant startedAt, Instant finishedAt) throws IOException {
+            DbConfig config = DbConfig.fromEnv();
+            String url = buildJdbcUrl(config);
+            long durationMs = Duration.between(startedAt, finishedAt).toMillis();
+            int totalPrevious = report.previous.rows.size();
+            int totalCurrent = report.current.rows.size();
+            int added = report.added.size();
+            int removed = report.removed.size();
+            int updated = report.updates.size();
+            int unchanged = report.unchanged;
+            int sharedCount = updated + unchanged;
+            int netChange = totalCurrent - totalPrevious;
+
+            Double netChangePctPrevious = percentValue(netChange, totalPrevious);
+            Double addedPctCurrent = percentValue(added, totalCurrent);
+            Double removedPctPrevious = percentValue(removed, totalPrevious);
+            Double updatedPctShared = percentValue(updated, sharedCount);
+            Double unchangedPctShared = percentValue(unchanged, sharedCount);
+
+            String fieldChangeJson = toJsonMap(report.fieldChangeCounts);
+            String missingKeyPrevJson = toJsonMap(report.previous.missingKeyCounts);
+            String missingKeyCurJson = toJsonMap(report.current.missingKeyCounts);
+            String completenessPrevJson = toJsonCompleteness(report.previous);
+            String completenessCurJson = toJsonCompleteness(report.current);
+
+            try {
+                Class.forName("org.postgresql.Driver");
+            } catch (ClassNotFoundException e) {
+                throw new IOException("PostgreSQL JDBC driver not found. Add the driver JAR to the classpath to use --db-log.", e);
+            }
+
+            try (Connection connection = DriverManager.getConnection(url, config.user(), config.password())) {
+                connection.setAutoCommit(false);
+                ensureSchema(connection, schema);
+                ensureTable(connection, schema);
+
+                String sql = "INSERT INTO " + schema + ".roster_runs (" +
+                        "id, app, previous_path, current_path, key_columns, key_normalize, value_normalize, summary_only," +
+                        "detail_limit, export_dir, export_unchanged, export_updated_rows, export_status, json_path," +
+                        "started_at, finished_at, duration_ms, total_previous, total_current, added, removed, updated," +
+                        "unchanged, duplicate_previous, duplicate_current, invalid_previous, invalid_current, net_change," +
+                        "net_change_pct_previous, added_pct_current, removed_pct_previous, updated_pct_shared, unchanged_pct_shared," +
+                        "field_change_counts, missing_key_counts_previous, missing_key_counts_current, completeness_previous, completeness_current" +
+                        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+
+                try (PreparedStatement ps = connection.prepareStatement(sql)) {
+                    int i = 1;
+                    ps.setObject(i++, UUID.randomUUID());
+                    ps.setString(i++, app);
+                    ps.setString(i++, previousPath);
+                    ps.setString(i++, currentPath);
+                    ps.setArray(i++, connection.createArrayOf("text", keyColumns.toArray()));
+                    ps.setString(i++, keyNormalize);
+                    ps.setString(i++, valueNormalize);
+                    ps.setBoolean(i++, summaryOnly);
+                    if (detailLimit <= 0) {
+                        ps.setNull(i++, java.sql.Types.INTEGER);
+                    } else {
+                        ps.setInt(i++, detailLimit);
+                    }
+                    ps.setString(i++, runOptions.exportDir());
+                    ps.setBoolean(i++, runOptions.exportUnchanged());
+                    ps.setBoolean(i++, runOptions.exportUpdatedRows());
+                    ps.setBoolean(i++, runOptions.exportStatus());
+                    ps.setString(i++, runOptions.jsonPath());
+                    ps.setObject(i++, java.sql.Timestamp.from(startedAt));
+                    ps.setObject(i++, java.sql.Timestamp.from(finishedAt));
+                    ps.setLong(i++, durationMs);
+                    ps.setInt(i++, totalPrevious);
+                    ps.setInt(i++, totalCurrent);
+                    ps.setInt(i++, added);
+                    ps.setInt(i++, removed);
+                    ps.setInt(i++, updated);
+                    ps.setInt(i++, unchanged);
+                    ps.setInt(i++, report.previous.duplicates);
+                    ps.setInt(i++, report.current.duplicates);
+                    ps.setInt(i++, report.previous.invalid);
+                    ps.setInt(i++, report.current.invalid);
+                    ps.setInt(i++, netChange);
+                    setNullableDouble(ps, i++, netChangePctPrevious);
+                    setNullableDouble(ps, i++, addedPctCurrent);
+                    setNullableDouble(ps, i++, removedPctPrevious);
+                    setNullableDouble(ps, i++, updatedPctShared);
+                    setNullableDouble(ps, i++, unchangedPctShared);
+                    ps.setObject(i++, fieldChangeJson, java.sql.Types.OTHER);
+                    ps.setObject(i++, missingKeyPrevJson, java.sql.Types.OTHER);
+                    ps.setObject(i++, missingKeyCurJson, java.sql.Types.OTHER);
+                    ps.setObject(i++, completenessPrevJson, java.sql.Types.OTHER);
+                    ps.setObject(i++, completenessCurJson, java.sql.Types.OTHER);
+                    ps.executeUpdate();
+                }
+
+                connection.commit();
+            } catch (SQLException e) {
+                throw new IOException("DB log failed: " + e.getMessage(), e);
+            }
+        }
+
+        private static void ensureSchema(Connection connection, String schema) throws SQLException {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("CREATE SCHEMA IF NOT EXISTS " + schema);
+            }
+        }
+
+        private static void ensureTable(Connection connection, String schema) throws SQLException {
+            String sql = "CREATE TABLE IF NOT EXISTS " + schema + ".roster_runs (" +
+                    "id uuid PRIMARY KEY," +
+                    "app text NOT NULL," +
+                    "previous_path text NOT NULL," +
+                    "current_path text NOT NULL," +
+                    "key_columns text[] NOT NULL," +
+                    "key_normalize text NOT NULL," +
+                    "value_normalize text NOT NULL," +
+                    "summary_only boolean NOT NULL," +
+                    "detail_limit integer," +
+                    "export_dir text," +
+                    "export_unchanged boolean NOT NULL," +
+                    "export_updated_rows boolean NOT NULL," +
+                    "export_status boolean NOT NULL," +
+                    "json_path text," +
+                    "started_at timestamptz NOT NULL," +
+                    "finished_at timestamptz NOT NULL," +
+                    "duration_ms integer NOT NULL," +
+                    "total_previous integer NOT NULL," +
+                    "total_current integer NOT NULL," +
+                    "added integer NOT NULL," +
+                    "removed integer NOT NULL," +
+                    "updated integer NOT NULL," +
+                    "unchanged integer NOT NULL," +
+                    "duplicate_previous integer NOT NULL," +
+                    "duplicate_current integer NOT NULL," +
+                    "invalid_previous integer NOT NULL," +
+                    "invalid_current integer NOT NULL," +
+                    "net_change integer NOT NULL," +
+                    "net_change_pct_previous numeric," +
+                    "added_pct_current numeric," +
+                    "removed_pct_previous numeric," +
+                    "updated_pct_shared numeric," +
+                    "unchanged_pct_shared numeric," +
+                    "field_change_counts jsonb," +
+                    "missing_key_counts_previous jsonb," +
+                    "missing_key_counts_current jsonb," +
+                    "completeness_previous jsonb," +
+                    "completeness_current jsonb," +
+                    "created_at timestamptz NOT NULL DEFAULT now()" +
+                    ")";
+            try (Statement statement = connection.createStatement()) {
+                statement.execute(sql);
+            }
+        }
+
+        private static String buildJdbcUrl(DbConfig config) {
+            return "jdbc:postgresql://" + config.host() + ":" + config.port() + "/" + config.name() +
+                    "?sslmode=" + config.sslMode();
+        }
+
+        private static void setNullableDouble(PreparedStatement ps, int index, Double value) throws SQLException {
+            if (value == null) {
+                ps.setNull(index, java.sql.Types.NUMERIC);
+            } else {
+                ps.setDouble(index, value);
+            }
+        }
+
+        private static Double percentValue(double numerator, double denominator) {
+            if (denominator == 0) {
+                return null;
+            }
+            return (numerator / denominator) * 100.0;
+        }
+
+        private static String toJsonMap(Map<String, Integer> values) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{");
+            List<String> keys = new ArrayList<>(values.keySet());
+            keys.sort(String::compareTo);
+            for (int i = 0; i < keys.size(); i++) {
+                String key = keys.get(i);
+                sb.append("\"").append(escapeJson(key)).append("\":").append(values.get(key));
+                if (i < keys.size() - 1) {
+                    sb.append(",");
+                }
+            }
+            sb.append("}");
+            return sb.toString();
+        }
+
+        private static String toJsonCompleteness(Roster roster) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{");
+            List<String> fields = new ArrayList<>(roster.header);
+            fields.sort(String::compareTo);
+            for (int i = 0; i < fields.size(); i++) {
+                String field = fields.get(i);
+                int nonEmpty = roster.nonEmptyCounts.getOrDefault(field, 0);
+                sb.append("\"").append(escapeJson(field)).append("\":{");
+                sb.append("\"non_empty\":").append(nonEmpty).append(",");
+                sb.append("\"total\":").append(roster.totalRows).append(",");
+                sb.append("\"pct\":").append(percentValue(nonEmpty, roster.totalRows));
+                sb.append("}");
+                if (i < fields.size() - 1) {
+                    sb.append(",");
+                }
+            }
+            sb.append("}");
+            return sb.toString();
+        }
+
+        private static String escapeJson(String input) {
+            return input.replace("\\", "\\\\").replace("\"", "\\\"");
+        }
+
+        private record DbConfig(String host, String port, String name, String user, String password, String sslMode) {
+            private static DbConfig fromEnv() throws IOException {
+                String host = envOrDefault(ENV_HOST, "db-acupinir.groupscholar.com");
+                String port = envOrDefault(ENV_PORT, "23947");
+                String name = envOrDefault(ENV_NAME, "postgres");
+                String user = envOrDefault(ENV_USER, "ralph");
+                String password = System.getenv(ENV_PASSWORD);
+                String sslMode = envOrDefault(ENV_SSLMODE, "require");
+                if (password == null || password.isBlank()) {
+                    throw new IOException("Missing required env var: " + ENV_PASSWORD);
+                }
+                return new DbConfig(host, port, name, user, password, sslMode);
+            }
+
+            private static String envOrDefault(String key, String fallback) {
+                String value = System.getenv(key);
+                if (value == null || value.isBlank()) {
+                    return fallback;
+                }
+                return value;
+            }
+        }
+    }
+
+    record DbRunOptions(String exportDir, boolean exportUnchanged, boolean exportUpdatedRows,
+                        boolean exportStatus, String jsonPath) {}
+
+    static class DbLogger {
+        static void logRun(Report report, String previousPath, String currentPath, String app, String schema,
+                           List<String> keyColumns, String keyNormalize, String valueNormalize, boolean summaryOnly,
+                           int detailLimit, DbRunOptions runOptions, Instant startedAt, Instant finishedAt)
+                throws IOException {
+            String url = System.getenv("GS_ROSTER_RECONCILER_DB_URL");
+            if (url == null || url.isBlank()) {
+                throw new IOException("DB logging requires GS_ROSTER_RECONCILER_DB_URL to be set");
+            }
+            UUID runId = UUID.randomUUID();
+            try (Connection connection = DriverManager.getConnection(url)) {
+                connection.setAutoCommit(false);
+                ensureSchema(connection, schema);
+                insertRun(connection, schema, runId, report, previousPath, currentPath, app, keyColumns, keyNormalize,
+                        valueNormalize, summaryOnly, detailLimit, runOptions, startedAt, finishedAt);
+                insertFieldChangeCounts(connection, schema, runId, report.fieldChangeCounts);
+                insertMissingKeyCounts(connection, schema, runId, "previous", report.previous.missingKeyCounts);
+                insertMissingKeyCounts(connection, schema, runId, "current", report.current.missingKeyCounts);
+                insertFieldCompleteness(connection, schema, runId, "previous", report.previous);
+                insertFieldCompleteness(connection, schema, runId, "current", report.current);
+                connection.commit();
+            } catch (SQLException e) {
+                throw new IOException("DB logging failed: " + e.getMessage(), e);
+            }
+        }
+
+        private static void ensureSchema(Connection connection, String schema) throws SQLException {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("CREATE SCHEMA IF NOT EXISTS " + schema);
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS %s.runs (
+                          run_id uuid PRIMARY KEY,
+                          created_at timestamptz NOT NULL,
+                          app text NOT NULL,
+                          previous_path text NOT NULL,
+                          current_path text NOT NULL,
+                          key_columns text NOT NULL,
+                          key_normalize text NOT NULL,
+                          value_normalize text NOT NULL,
+                          ignored_fields text,
+                          unknown_ignored_fields text,
+                          summary_only boolean NOT NULL,
+                          detail_limit integer NOT NULL,
+                          total_previous integer NOT NULL,
+                          total_current integer NOT NULL,
+                          added integer NOT NULL,
+                          removed integer NOT NULL,
+                          updated integer NOT NULL,
+                          unchanged integer NOT NULL,
+                          duplicate_keys_previous integer NOT NULL,
+                          duplicate_keys_current integer NOT NULL,
+                          invalid_rows_previous integer NOT NULL,
+                          invalid_rows_current integer NOT NULL,
+                          net_change integer NOT NULL,
+                          net_change_pct_previous numeric,
+                          added_pct_current numeric,
+                          removed_pct_previous numeric,
+                          updated_pct_shared numeric,
+                          unchanged_pct_shared numeric,
+                          export_dir text,
+                          export_unchanged boolean,
+                          export_updated_rows boolean,
+                          export_status boolean,
+                          json_path text,
+                          started_at timestamptz,
+                          finished_at timestamptz
+                        )
+                        """.formatted(schema));
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS %s.field_change_counts (
+                          run_id uuid REFERENCES %s.runs(run_id) ON DELETE CASCADE,
+                          field_name text NOT NULL,
+                          change_count integer NOT NULL
+                        )
+                        """.formatted(schema, schema));
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS %s.missing_key_counts (
+                          run_id uuid REFERENCES %s.runs(run_id) ON DELETE CASCADE,
+                          roster_side text NOT NULL,
+                          key_column text NOT NULL,
+                          missing_count integer NOT NULL
+                        )
+                        """.formatted(schema, schema));
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS %s.field_completeness (
+                          run_id uuid REFERENCES %s.runs(run_id) ON DELETE CASCADE,
+                          roster_side text NOT NULL,
+                          field_name text NOT NULL,
+                          non_empty integer NOT NULL,
+                          total_rows integer NOT NULL,
+                          pct numeric
+                        )
+                        """.formatted(schema, schema));
+            }
+        }
+
+        private static void insertRun(Connection connection, String schema, UUID runId, Report report, String previousPath,
+                                      String currentPath, String app, List<String> keyColumns, String keyNormalize,
+                                      String valueNormalize, boolean summaryOnly, int detailLimit, DbRunOptions options,
+                                      Instant startedAt, Instant finishedAt) throws SQLException {
+            String sql = "INSERT INTO " + schema + ".runs (" +
+                    "run_id, created_at, app, previous_path, current_path, key_columns, key_normalize, value_normalize, " +
+                    "ignored_fields, unknown_ignored_fields, summary_only, detail_limit, total_previous, total_current, " +
+                    "added, removed, updated, unchanged, duplicate_keys_previous, duplicate_keys_current, " +
+                    "invalid_rows_previous, invalid_rows_current, net_change, net_change_pct_previous, added_pct_current, " +
+                    "removed_pct_previous, updated_pct_shared, unchanged_pct_shared, export_dir, export_unchanged, " +
+                    "export_updated_rows, export_status, json_path, started_at, finished_at" +
+                    ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                int sharedCount = report.updates.size() + report.unchanged;
+                statement.setObject(1, runId);
+                statement.setTimestamp(2, Timestamp.from(startedAt));
+                statement.setString(3, app);
+                statement.setString(4, previousPath);
+                statement.setString(5, currentPath);
+                statement.setString(6, String.join(", ", keyColumns));
+                statement.setString(7, keyNormalize);
+                statement.setString(8, valueNormalize);
+                statement.setString(9, joinSorted(report.ignoredFields));
+                statement.setString(10, joinSorted(report.unknownIgnoredFields));
+                statement.setBoolean(11, summaryOnly);
+                statement.setInt(12, detailLimit);
+                statement.setInt(13, report.previous.rows.size());
+                statement.setInt(14, report.current.rows.size());
+                statement.setInt(15, report.added.size());
+                statement.setInt(16, report.removed.size());
+                statement.setInt(17, report.updates.size());
+                statement.setInt(18, report.unchanged);
+                statement.setInt(19, report.previous.duplicates);
+                statement.setInt(20, report.current.duplicates);
+                statement.setInt(21, report.previous.invalid);
+                statement.setInt(22, report.current.invalid);
+                statement.setInt(23, report.current.rows.size() - report.previous.rows.size());
+                setNullableNumeric(statement, 24, ratio(report.current.rows.size() - report.previous.rows.size(),
+                        report.previous.rows.size()));
+                setNullableNumeric(statement, 25, ratio(report.added.size(), report.current.rows.size()));
+                setNullableNumeric(statement, 26, ratio(report.removed.size(), report.previous.rows.size()));
+                setNullableNumeric(statement, 27, ratio(report.updates.size(), sharedCount));
+                setNullableNumeric(statement, 28, ratio(report.unchanged, sharedCount));
+                statement.setString(29, blankToNull(options.exportDir()));
+                statement.setObject(30, options.exportDir() == null ? null : options.exportUnchanged(), Types.BOOLEAN);
+                statement.setObject(31, options.exportDir() == null ? null : options.exportUpdatedRows(), Types.BOOLEAN);
+                statement.setObject(32, options.exportDir() == null ? null : options.exportStatus(), Types.BOOLEAN);
+                statement.setString(33, blankToNull(options.jsonPath()));
+                statement.setTimestamp(34, Timestamp.from(startedAt));
+                statement.setTimestamp(35, Timestamp.from(finishedAt));
+                statement.executeUpdate();
+            }
+        }
+
+        private static void insertFieldChangeCounts(Connection connection, String schema, UUID runId,
+                                                    Map<String, Integer> counts) throws SQLException {
+            if (counts.isEmpty()) {
+                return;
+            }
+            String sql = "INSERT INTO " + schema + ".field_change_counts (run_id, field_name, change_count) VALUES (?,?,?)";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+                    statement.setObject(1, runId);
+                    statement.setString(2, entry.getKey());
+                    statement.setInt(3, entry.getValue());
+                    statement.addBatch();
+                }
+                statement.executeBatch();
+            }
+        }
+
+        private static void insertMissingKeyCounts(Connection connection, String schema, UUID runId, String side,
+                                                   Map<String, Integer> counts) throws SQLException {
+            if (counts.isEmpty()) {
+                return;
+            }
+            String sql = "INSERT INTO " + schema + ".missing_key_counts (run_id, roster_side, key_column, missing_count) " +
+                    "VALUES (?,?,?,?)";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+                    statement.setObject(1, runId);
+                    statement.setString(2, side);
+                    statement.setString(3, entry.getKey());
+                    statement.setInt(4, entry.getValue());
+                    statement.addBatch();
+                }
+                statement.executeBatch();
+            }
+        }
+
+        private static void insertFieldCompleteness(Connection connection, String schema, UUID runId, String side,
+                                                    Roster roster) throws SQLException {
+            if (roster.header.isEmpty()) {
+                return;
+            }
+            String sql = "INSERT INTO " + schema + ".field_completeness " +
+                    "(run_id, roster_side, field_name, non_empty, total_rows, pct) VALUES (?,?,?,?,?,?)";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                for (String field : roster.header) {
+                    int nonEmpty = roster.nonEmptyCounts.getOrDefault(field, 0);
+                    statement.setObject(1, runId);
+                    statement.setString(2, side);
+                    statement.setString(3, field);
+                    statement.setInt(4, nonEmpty);
+                    statement.setInt(5, roster.totalRows);
+                    setNullableNumeric(statement, 6, ratio(nonEmpty, roster.totalRows));
+                    statement.addBatch();
+                }
+                statement.executeBatch();
+            }
+        }
+
+        private static String joinSorted(Set<String> values) {
+            if (values == null || values.isEmpty()) {
+                return null;
+            }
+            List<String> sorted = new ArrayList<>(values);
+            sorted.sort(String::compareTo);
+            return String.join(", ", sorted);
+        }
+
+        private static String blankToNull(String value) {
+            if (value == null || value.isBlank()) {
+                return null;
+            }
+            return value;
+        }
+
+        private static Double ratio(int numerator, int denominator) {
+            if (denominator == 0) {
+                return null;
+            }
+            return (double) numerator / (double) denominator;
+        }
+
+        private static void setNullableNumeric(PreparedStatement statement, int index, Double value) throws SQLException {
+            if (value == null) {
+                statement.setNull(index, Types.NUMERIC);
+            } else {
+                statement.setObject(index, value, Types.NUMERIC);
+            }
         }
     }
 }

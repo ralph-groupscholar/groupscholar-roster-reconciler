@@ -19,6 +19,7 @@ Group Scholar Roster Reconciler is a local-first CLI that compares two roster CS
 - Optional value normalization (trim/collapse) to ignore whitespace-only changes.
 - Optional summary-only text report for large diffs.
 - Optional detail limiting for large rosters.
+- Optional Postgres logging for run summaries and field change metadata.
 
 ## Usage
 
@@ -112,13 +113,28 @@ Summary-only text output (skip detailed lists):
 java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --key email --summary-only
 ```
 
+Database logging (Postgres):
+
+```bash
+export GS_ROSTER_RECONCILER_DB_URL="postgres://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require"
+java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --db-log
+```
+
+Optional schema/app overrides:
+
+```bash
+java -cp out Main --previous data/roster_prev.csv --current data/roster_current.csv --db-log --db-schema gs_roster_reconciler --db-app roster-reconciler
+```
+
 Log each run to Postgres (optional):
 
 ```bash
-export ROSTER_RECONCILER_DB_URL="jdbc:postgresql://host:port/dbname"
-export ROSTER_RECONCILER_DB_USER="user"
-export ROSTER_RECONCILER_DB_PASSWORD="password"
-java -cp "out:lib/postgresql-42.7.3.jar" Main --previous data/roster_prev.csv --current data/roster_current.csv --db-log --db-schema roster_reconciler --db-app roster-reconciler
+export GS_DB_HOST="db-acupinir.groupscholar.com"
+export GS_DB_PORT="23947"
+export GS_DB_NAME="postgres"
+export GS_DB_USER="ralph"
+export GS_DB_PASSWORD="your-password"
+java -cp "out:lib/postgresql.jar" Main --previous data/roster_prev.csv --current data/roster_current.csv --db-log --db-schema roster_reconciler --db-app roster-reconciler
 ```
 
 Export files written to `--export-dir`:
@@ -139,7 +155,8 @@ Export files written to `--export-dir`:
 - Use `--ignore` to skip volatile fields (e.g., `last_login`) in the diff.
 - Use `--summary-only` when you only need totals + rates.
 - Use `--max-detail` to cap the number of added/removed/updated entries shown.
-- Use `--db-log` to persist run summaries to Postgres (requires the JDBC jar + env vars).
+- Use `--db-log` with `GS_ROSTER_RECONCILER_DB_URL` to log run summaries to Postgres (default schema: `gs_roster_reconciler`).
+- Use `--db-log` to persist run summaries to Postgres (requires the JDBC jar + GS_DB_* env vars).
 
 ## Example Output (Summary)
 ```
@@ -183,12 +200,16 @@ java -cp out MainTest
 
 ## Database
 - Schema and seed SQL live in `db/schema.sql` and `db/seed.sql`.
-- Use `--db-log` to persist run summaries (requires the JDBC jar + env vars).
+- Use `--db-log` to persist run summaries (requires the JDBC jar + GS_DB_* env vars).
+- Apply schema + seed:
+```bash
+psql "host=${GS_DB_HOST} port=${GS_DB_PORT} dbname=${GS_DB_NAME} user=${GS_DB_USER}" -f db/schema.sql
+psql "host=${GS_DB_HOST} port=${GS_DB_PORT} dbname=${GS_DB_NAME} user=${GS_DB_USER}" -f db/seed.sql
+```
 
 ## Technologies
-- Java 17 (no external dependencies)
+- Java 17 (no external dependencies for core CLI; optional Postgres JDBC driver for `--db-log`)
 - PostgreSQL (optional run logging)
-- PostgreSQL JDBC driver (for `--db-log`)
 
 ## Tests
 ```bash
